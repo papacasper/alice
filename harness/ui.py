@@ -208,7 +208,7 @@ class Renderer:
             self._spin_start()
         elif k == "tool_batch":
             self._spin_stop(); self._end_text()
-            if not self.quiet: print(f"{self.indent}{dim(f'  ⎿ {e['n']} tool calls in this step')}", file=sys.stderr, flush=True)
+            if not self.quiet: print(self.indent + dim(f"  ⎿ {e['n']} tool calls in this step"), file=sys.stderr, flush=True)
         elif k == "tool_call":
             self._spin_stop(); self._end_text()
             self._cur = e
@@ -233,7 +233,7 @@ class Renderer:
         if name == "TodoWrite" and self.state.todos:
             out(render_todos(self.state.todos, ind))
         elif name in ("Edit", "Write", "NotebookEdit") and self.state.ui_extra and not res.startswith("error"):
-            a, r = diff_counts(self.state.ui_extra)
+            a, r = getattr(self.state, "ui_counts", None) or diff_counts(self.state.ui_extra)
             verb = "Wrote" if name == "Write" else "Updated"
             out(f"{ind}{dim('⎿')}  {verb} {dim(short_args(name, getattr(self, '_cur', {}).get('args', {})))} with "
                 f"{green(plural(a, 'addition'))}{' and ' + red(plural(r, 'removal')) if r else ''}")
@@ -243,7 +243,7 @@ class Renderer:
             col = red if res.startswith("error") else dim
             for i, l in enumerate(shown):
                 out(f"{ind}{dim('⎿') if i == 0 else ' '}  {col(l[:140])}")
-            if more: out(f"{ind}   {dim("… +" + plural(more, "line") + " (/expand or ctrl+o)")}")
+            if more: out(f"{ind}   " + dim("… +" + plural(more, "line") + " (/expand or ctrl+o)"))
 
     def transcript(self) -> str:
         parts = []

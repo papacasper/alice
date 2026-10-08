@@ -1,4 +1,4 @@
-# harness — "Alice", a Claude Code–style agent for local Ollama models
+# harness — "Alice", a Claude Code–style agent for local models (llama.cpp or Ollama)
 
 Stdlib-only Python. Default model: abliterated Qwen3.5-9B (`harness/llm.py: DEFAULT_MODEL`).
 Launcher: any `alice` script on your PATH that runs `PYTHONPATH=<repo> python3 -m harness "$@"` (see the top-level README).
@@ -8,7 +8,7 @@ alice                         # interactive REPL (streaming, slash commands, his
 alice "fix the failing test"  # one-shot; exit 0 answered, 2 step limit, 1 error
 echo "summarize" | alice -p   # headless; --output-format json for scripts
 alice -c  /  alice -r [ID]    # continue the latest / a specific session
-python3 -m unittest discover -s harness/tests     # no Ollama needed (fake LLM)
+python3 -m unittest discover -s harness/tests     # no model needed (fake LLM, fake llama-server)
 ```
 
 ## What mirrors Claude Code
@@ -19,7 +19,7 @@ python3 -m unittest discover -s harness/tests     # no Ollama needed (fake LLM)
 | Bash | persistent cwd between calls, timeout kill, middle-truncated output |
 | Permissions | `--permission-mode default\|acceptEdits\|plan\|bypassPermissions`, allow/deny rules, `y/a/n` prompt — `permissions.py`. **Default here is bypassPermissions** (everything allowed); use `--permission-mode default` to be asked |
 | Memory | `AGENTS.md`, `CLAUDE.md`, `ALICE.md` from `~/.alice/` and the project dir only (no walking up), capped; `--no-memory` |
-| Slash commands | `/help /clear /compact /model /models /permissions /plan /tools /todos /cost /status /memory /skills /mcp /hooks /resume /init /config /exit`; custom ones from `.alice/commands/*.md` or `.claude/commands/*.md` (`$ARGUMENTS`) |
+| Slash commands | `/help` lists them all (`/clear /compact /model /resume /rewind /context /statusline /rc` …); custom ones from `.alice/commands/*.md` or `.claude/commands/*.md` (`$ARGUMENTS`) |
 | Skills | `SKILL.md` dirs under `~/.claude/skills`, `~/.alice/skills`, `./.claude/skills`, `./.alice/skills`; model loads one with `Skill` |
 | Subagents | `Task` (`general-purpose` or read-only `explore`) runs a fresh-context agent and returns its report |
 | Hooks | `PreToolUse PostToolUse UserPromptSubmit Stop SessionStart` in `settings.json` (exit 2 blocks) — `hooks.py` |
@@ -34,10 +34,10 @@ Settings: `~/.alice/settings.json`, `./.alice/settings.json`, `./.alice/settings
 A full-screen TUI and plugin marketplaces.
 
 ## Modules (swap any one)
-`llm.py` Ollama client (streaming, usage) · `tools.py` `@tool` registry · `cctools.py` Claude Code tools · `builtin.py` legacy sandboxed tools (kept for tests/plugins) · `agent.py` loop (ctxguard, repeat breaker, gate/post hooks) · `cli.py` REPL + slash commands · `ui.py` rendering · `context.py` system prompt/memory/skills/settings.
+`llm.py` llama-server and Ollama clients (streaming, usage, KV slots) · `tools.py` `@tool` registry · `cctools.py` Claude Code tools · `builtin.py` legacy sandboxed tools (kept for tests/plugins) · `agent.py` loop (ctxguard, repeat breaker, gate/post hooks) · `cli.py` app + REPL · `commands.py` slash commands · `prompt.py` prompt UI · `statusline.py` status line · `ui.py` rendering · `fsutil.py` file helpers · `context.py` system prompt/memory/skills/settings.
 
 ## Known limits
-- 9B model, 12k context (`--num-ctx`): the system prompt + tool schemas cost ~3k tokens; `ctxguard` elides old tool output so the task is never dropped.
+- 9B model, 32k context by default (`--num-ctx`): the system prompt + tool schemas cost a few thousand tokens (`/context` shows the split); `ctxguard` elides old tool output so the task is never dropped.
 - Small models still guess when no tool is obviously relevant; the system prompt says never to guess dates/live data.
 - Give the model exact tools for anything countable; it miscounts by eye.
 
@@ -47,7 +47,6 @@ A full-screen TUI and plugin marketplaces.
 - Custom subagents: `agents/*.md` with `name`, `description`, `tools` frontmatter, used via `Task(subagent_type=...)`.
 - `/rewind` (restores files changed by Edit/Write/NotebookEdit; Bash side effects are not undone), `/context`, `/export`, `/doctor`, `/review`, `/agents`.
 - `# note` saves to the project ALICE.md (or the existing AGENTS.md/CLAUDE.md), tab completion for `/commands` and paths, spinner with elapsed seconds, auto-compact at 75% of the context.
-- Known cost: the 18 tool schemas take ~4.4k tokens of the 12k context (`/context`).
 
 ## Backend: llama.cpp by default (`--backend ollama` to use Ollama)
 `alice --backend llama` starts a private `llama-server` (llama.cpp) for the session and stops it on exit; the log is `~/.alice/llama-server.log`.
@@ -56,7 +55,7 @@ A full-screen TUI and plugin marketplaces.
 - Started with `-c <num_ctx> -ngl 99 --jinja` (`--jinja` is what makes tool calls come back structured). Extra flags: `--llama-server-args '-ngl 20'`.
 - Already have a server (LM Studio, vLLM, a remote box, a running llama-server)? `alice --backend llama --base-url http://host:8080` connects instead of starting one (`ALICE_API_KEY` for auth).
 - Settings keys: `backend`, `baseUrl`, `llamaServerArgs`; env: `ALICE_BACKEND`, `ALICE_BASE_URL`.
-- Ollama stays the default until the real llama-server path has been run against the 9B model (tested so far only against a fake server).
+- llama.cpp became the default after the eval suite passed on it with the 9B model.
 
 ## Claude Code-style UI (prompt_toolkit + rich)
 
@@ -97,4 +96,4 @@ Measured on the 8 GB RTX 4060 with `evals/bench_server.py` (results in `evals/be
 - **Compaction** counts tool calls and tool schemas when deciding the context is nearly full; set `helperModel` to summarize with a different model (the private server swaps to it and back, so it costs two reloads).
 
 ## Evals
-`python3 evals/run.py` runs 13 tasks (write/edit/search/shell/git/honesty) against the real model and grades each by inspecting files and command output, never by how the answer reads. `--selftest` proves every check fails on the untouched workspace and passes with its reference solution (no model needed; also in the unit tests). Options: `--model`, `--think`, `--num-ctx`, `--server-args`, `--tag`, `--repeat`. Results append to `evals/results.jsonl`.
+`python3 evals/run.py` runs 14 tasks (write/edit/search/shell/git/honesty) against the real model and grades each by inspecting files and command output, never by how the answer reads. `--selftest` proves every check fails on the untouched workspace and passes with its reference solution (no model needed; also in the unit tests). Options: `--model`, `--think`, `--num-ctx`, `--server-args`, `--tag`, `--repeat`. Results append to `evals/results.jsonl`.

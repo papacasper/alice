@@ -5,6 +5,7 @@ Appends one JSON line per variant to evals/bench_results.jsonl."""
 import argparse, json, os, subprocess, sys, time, urllib.request
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 from harness.llm import LlamaServer, DEFAULT_MODEL
+from harness.fsutil import append_line
 
 VARIANTS = {
     "baseline": [],
@@ -54,4 +55,4 @@ if __name__ == "__main__":
     out = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bench_results.jsonl")
     for name, flags in VARIANTS.items():
         if a.only and name not in a.only.split(","): continue
-        row = run(name, flags, a.model, a.ctx); print(json.dumps(row)); open(out, "a").write(json.dumps(row) + "\n")
+        row = run(name, flags, a.model, a.ctx); print(json.dumps(row)); append_line(out, json.dumps(row))

@@ -1,0 +1,17 @@
+name: test
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ["3.10", "3.x"]   # oldest supported and newest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: unit tests (no model; fake LLM and fake llama-server)
+        run: python -W error::ResourceWarning -m unittest discover -s harness/tests
+      - name: eval checks fail untouched and pass on reference solutions
+        run: python evals/run.py --selftest

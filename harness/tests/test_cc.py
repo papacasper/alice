@@ -7,6 +7,7 @@ from harness.hooks import Hooks
 from harness.mcp import McpServer
 from harness.permissions import Permissions
 from test_harness import FakeLLM, call, say
+from harness.fsutil import read_json, read_text, write_file, write_json
 
 def tmp(): return os.path.realpath(tempfile.mkdtemp())
 
@@ -27,11 +28,20 @@ class TestCcTools(unittest.TestCase):
         self.assertIn("not found", self.c("Edit", file_path="a.py", old_string="zzz", new_string="q"))
         self.assertIn("identical", self.c("Edit", file_path="a.py", old_string="y", new_string="y"))
         self.assertIn("Edited", self.c("Edit", file_path="a.py", old_string="x = 1", new_string="x = 9", replace_all=True))
-        self.assertEqual(open(os.path.join(self.d, "a.py")).read(), "x = 9\ny = 2\nx = 9\n")
+        self.assertEqual(read_text(os.path.join(self.d, "a.py")), "x = 9\ny = 2\nx = 9\n")
         self.assertIn("+x = 9", self.st.ui_extra)
+    def test_line_counts_are_full_even_when_the_diff_is_cut(self):
+        self.c("Write", file_path="big.txt", content="".join(f"l{i}\n" for i in range(100)))
+        self.assertEqual(self.st.lines, [100, 0])
+        self.c("Read", file_path="big.txt")
+        self.c("Write", file_path="big.txt", content="".join(f"m{i}\n" for i in range(100)))
+        self.assertEqual((self.st.ui_counts, self.st.lines), ((100, 100), [200, 100]))
+        self.assertEqual(len(self.st.ui_extra.splitlines()), 60)
+        self.c("Edit", file_path="big.txt", old_string="m5\n", new_string="")
+        self.assertEqual((self.st.ui_counts, self.st.lines), ((0, 1), [200, 101]))
     def test_edit_detects_external_change(self):
         self.c("Read", file_path="a.py"); p = os.path.join(self.d, "a.py")
-        open(p, "w").write("changed\n"); os.utime(p, (1, 1))
+        write_file(p, "w", "changed\n"); os.utime(p, (1, 1))
         self.assertIn("changed on disk", self.c("Edit", file_path="a.py", old_string="changed", new_string="z"))
     def test_write_new_and_overwrite_rules(self):
         self.assertIn("Created", self.c("Write", file_path="sub/n.txt", content="hi"))
@@ -46,7 +56,7 @@ class TestCcTools(unittest.TestCase):
     def test_long_read_pages_with_hint_and_reaches_the_end(self):
         lines = [f"line {i}: the quick brown fox jumps over the lazy dog, entry {i * 7} of the ledger." for i in range(300)]
         lines[150] = "The vault codeword is PELICAN-4471."
-        open(os.path.join(self.d, "big.txt"), "w").write("\n".join(lines))
+        write_file(os.path.join(self.d, "big.txt"), "w", "\n".join(lines))
         r, seen, off = self.c("Read", file_path="big.txt"), "", 1
         for _ in range(10):
             seen += r; self.assertNotIn("output cut", r)              # never the generic mid-output cut
@@ -55,7 +65,7 @@ class TestCcTools(unittest.TestCase):
             r = self.c("Read", file_path="big.txt", offset=int(m.group(1)))
         self.assertIn("PELICAN-4471", seen); self.assertIn("  300\t", seen)
     def test_glob_and_grep(self):
-        open(os.path.join(self.d, "b.txt"), "w").write("hello\n")
+        write_file(os.path.join(self.d, "b.txt"), "w", "hello\n")
         self.assertIn("a.py", self.c("Glob", pattern="**/*.py")); self.assertEqual(self.c("Glob", pattern="*.zip"), "No files found")
         for bad in ("**/.py", ".py"):   # bare extension: point at the glob the model meant (it once concluded "no .tmp files" from '**/.tmp')
             r = self.c("Glob", pattern=bad); self.assertIn("Did you mean '**/*.py'", r); self.assertIn("a.py", r)
@@ -106,7 +116,7 @@ SERVER = textwrap.dedent('''
 
 class TestMcp(unittest.TestCase):
     def test_roundtrip(self):
-        p = os.path.join(tmp(), "srv.py"); open(p, "w").write(SERVER)
+        p = os.path.join(tmp(), "srv.py"); write_file(p, "w", SERVER)
         s = McpServer("demo", sys.executable, [p], timeout=10)
         try:
             [t] = s.tools(); self.assertEqual(t.name, "mcp__demo__echo")
@@ -119,8 +129,8 @@ class TestContext(unittest.TestCase):
         meta, body = context.frontmatter("---\nname: x\ndescription: |\n  Does things\n---\nBody")
         self.assertEqual((meta["name"], meta["description"], body), ("x", "Does things", "Body"))
         d = tmp(); os.makedirs(os.path.join(d, ".alice", "commands"))
-        open(os.path.join(d, "CLAUDE.md"), "w").write("RULE-ONE")
-        open(os.path.join(d, ".alice", "commands", "hi.md"), "w").write("---\ndescription: greet\n---\nSay hi to $ARGUMENTS")
+        write_file(os.path.join(d, "CLAUDE.md"), "w", "RULE-ONE")
+        write_file(os.path.join(d, ".alice", "commands", "hi.md"), "w", "---\ndescription: greet\n---\nSay hi to $ARGUMENTS")
         self.assertIn("RULE-ONE", context.build_system(d, "m", {}))
         self.assertEqual(context.discover_commands(d)["hi"], ("greet", "Say hi to $ARGUMENTS"))
         self.assertIn(d, context.env_block(d, "m"))
@@ -147,7 +157,7 @@ class TestApp(unittest.TestCase):
     def test_one_shot_edit_flow_and_session(self):
         app, d = self.make([call("Write", file_path="n.txt", content="hi"), say("created")])
         self.assertEqual(app.one_shot("make n.txt"), 0)
-        self.assertEqual(open(os.path.join(d, "n.txt")).read(), "hi")
+        self.assertEqual(read_text(os.path.join(d, "n.txt")), "hi")
         self.assertEqual(sessions.load(d, app.sid)["messages"][1]["content"], "make n.txt")
     def test_one_shot_stdout_is_only_the_answer(self):
         import io, contextlib
@@ -177,14 +187,14 @@ class TestApp(unittest.TestCase):
         self.assertEqual([m["content"] for m in app2.agent.messages if m["role"] == "user"], ["first"])
     def test_custom_command(self):
         app, d = self.make([say("hey bob")])
-        os.makedirs(os.path.join(d, ".alice", "commands")); open(os.path.join(d, ".alice", "commands", "hi.md"), "w").write("Say hi to $ARGUMENTS")
+        os.makedirs(os.path.join(d, ".alice", "commands")); write_file(os.path.join(d, ".alice", "commands", "hi.md"), "w", "Say hi to $ARGUMENTS")
         app.commands = context.discover_commands(d); app.slash("/hi bob")
         self.assertEqual([m["content"] for m in app.agent.messages if m["role"] == "user"], ["Say hi to bob"])
 
 class TestSystemPrompt(unittest.TestCase):
     def test_shipped_prompt_has_sections_and_fits_budget(self):
         from harness import context
-        t = open(os.path.join(os.path.dirname(context.__file__), "system_prompt.md")).read()
+        t = read_text(os.path.join(os.path.dirname(context.__file__), "system_prompt.md"))
         for h in ("# Doing what the user wants", "# Tone and style", "# Working method", "# Tool use", "# Care with the irreversible", "# Git and references"): self.assertIn(h, t)
         self.assertLess(len(t) / 3.5, 1100)   # tokens: it is resent every request on a 12k context
         self.assertEqual(context.PROMPT.split(".")[0][:15], "You are Alice, ")
@@ -193,7 +203,7 @@ class TestSystemPrompt(unittest.TestCase):
         import importlib
         from harness import context
         old = context.HOME; d = tempfile.mkdtemp(); os.makedirs(os.path.join(d, ".alice"))
-        open(os.path.join(d, ".alice", "SYSTEM.md"), "w").write("CUSTOM GLOBAL PROMPT")
+        write_file(os.path.join(d, ".alice", "SYSTEM.md"), "w", "CUSTOM GLOBAL PROMPT")
         try:
             context.HOME = d; self.assertEqual(context._load_prompt(), "CUSTOM GLOBAL PROMPT")
         finally: context.HOME = old
@@ -203,8 +213,8 @@ class TestMemoryFiles(unittest.TestCase):
     def test_project_dir_only_three_names_no_walk_up(self):
         from harness import context
         top = tempfile.mkdtemp(); sub = os.path.join(top, "proj"); os.mkdir(sub)
-        open(os.path.join(top, "CLAUDE.md"), "w").write("PARENT")                      # must NOT be loaded
-        for n in ("AGENTS.md", "CLAUDE.md", "ALICE.md"): open(os.path.join(sub, n), "w").write(n)
+        write_file(os.path.join(top, "CLAUDE.md"), "w", "PARENT")                      # must NOT be loaded
+        for n in ("AGENTS.md", "CLAUDE.md", "ALICE.md"): write_file(os.path.join(sub, n), "w", n)
         got = [os.path.basename(f) for f in context.memory_files(sub) if f.startswith(sub)]
         self.assertEqual(got, ["AGENTS.md", "CLAUDE.md", "ALICE.md"])
         self.assertFalse(any(f.startswith(top) and not f.startswith(sub) for f in context.memory_files(sub)))
@@ -250,7 +260,7 @@ class TestImages(unittest.TestCase):
 
     def test_attach_and_mention(self):
         import base64
-        d = tempfile.mkdtemp(); open(os.path.join(d, "a.png"), "wb").write(base64.b64decode(self.PNG)); open(os.path.join(d, "n.txt"), "w").write("x")
+        d = tempfile.mkdtemp(); write_file(os.path.join(d, "a.png"), "wb", base64.b64decode(self.PNG)); write_file(os.path.join(d, "n.txt"), "w", "x")
         l = FakeLLM([]); l.model = "fake"; app = App(parse(["--root", d, "--no-mcp"]), l)
         self.assertEqual(app.attach_image("a.png"), ""); self.assertIn("not an image", app.attach_image("n.txt"))
         app.pending_images.clear(); out = app.expand_mentions("look @a.png please")
@@ -267,8 +277,8 @@ class TestPlugins(unittest.TestCase):
         from harness import context
         d = tempfile.mkdtemp(); pl = os.path.join(d, ".alice", "plugins", "demo")
         os.makedirs(os.path.join(pl, "commands")); os.makedirs(os.path.join(pl, "skills", "greet"))
-        open(os.path.join(pl, "commands", "hi.md"), "w").write("---\ndescription: say hi\n---\nSay hi to $ARGUMENTS")
-        open(os.path.join(pl, "skills", "greet", "SKILL.md"), "w").write("---\nname: greet\ndescription: greets\n---\nbody")
+        write_file(os.path.join(pl, "commands", "hi.md"), "w", "---\ndescription: say hi\n---\nSay hi to $ARGUMENTS")
+        write_file(os.path.join(pl, "skills", "greet", "SKILL.md"), "w", "---\nname: greet\ndescription: greets\n---\nbody")
         self.assertEqual([os.path.basename(x) for x in context.plugin_dirs(d)], ["demo"])
         self.assertIn("hi", context.discover_commands(d)); self.assertIn("greet", context.discover_skills(d))
 
@@ -323,7 +333,7 @@ class TestModelSwitch(unittest.TestCase):
         st = tempfile.mkdtemp(); blob = os.path.join(st, "blobs", "sha256-aa"); os.makedirs(os.path.dirname(blob)); open(blob, "w").close()
         for rel in ("registry.ollama.ai/library/qwen3/8b", "hf.co/user/repo/Q4_K_M"):
             f = os.path.join(st, "manifests", rel); os.makedirs(os.path.dirname(f))
-            json.dump({"layers": [{"mediaType": "application/vnd.ollama.image.model", "digest": "sha256:aa"}]}, open(f, "w"))
+            write_json(f, {"layers": [{"mediaType": "application/vnd.ollama.image.model", "digest": "sha256:aa"}]})
         old = os.environ.get("OLLAMA_MODELS"); os.environ["OLLAMA_MODELS"] = st
         try: got = installed_models()
         finally: os.environ.pop("OLLAMA_MODELS") if old is None else os.environ.update(OLLAMA_MODELS=old)
@@ -387,7 +397,7 @@ class TestReasoningOnlyTurn(unittest.TestCase):
                     self.wfile.write(b"data: [DONE]\n\n")
                 else:
                     self.send_header("Content-Type", "application/json"); self.end_headers(); self.wfile.write(json.dumps(plain).encode())
-        srv = http.server.HTTPServer(("127.0.0.1", 0), H); threading.Thread(target=srv.serve_forever, daemon=True).start(); self.addCleanup(srv.shutdown)
+        srv = http.server.HTTPServer(("127.0.0.1", 0), H); threading.Thread(target=srv.serve_forever, daemon=True).start(); self.addCleanup(srv.server_close); self.addCleanup(srv.shutdown)
         return f"http://127.0.0.1:{srv.server_port}"
 
     def test_answer_that_only_exists_in_reasoning_is_returned(self):
@@ -451,13 +461,13 @@ class TestBackendTuning(unittest.TestCase):
         from harness.llm import LlamaServer
         d = tempfile.mkdtemp(); srv = LlamaServer("m", 2048, binary=self.FAKE, slot_dir=d)
         for i in range(5):
-            f = os.path.join(d, f"s{i}.bin"); open(f, "wb").write(b"x" * 100); os.utime(f, (1e9 + i, time.time() - 3600 + i))
+            f = os.path.join(d, f"s{i}.bin"); write_file(f, "wb", b"x" * 100); os.utime(f, (1e9 + i, time.time() - 3600 + i))
         srv.prune_slots(max_bytes=250)
         self.assertEqual(sorted(os.listdir(d)), ["s3.bin", "s4.bin"])
     def test_recurrent_models_skip_slot_snapshots(self):
         from harness.llm import is_recurrent
         d = tempfile.mkdtemp(); hy, tf = os.path.join(d, "hy.gguf"), os.path.join(d, "tf.gguf")
-        open(hy, "wb").write(b"GGUF....qwen35.ssm.state_size...."); open(tf, "wb").write(b"GGUF....qwen3.attention.head_count....")
+        write_file(hy, "wb", b"GGUF....qwen35.ssm.state_size...."); write_file(tf, "wb", b"GGUF....qwen3.attention.head_count....")
         self.assertTrue(is_recurrent(hy)); self.assertFalse(is_recurrent(tf)); self.assertFalse(is_recurrent("hf.co/u/r:Q4"))
     def test_leaked_tool_calls_are_recovered(self):
         from harness.llm import leaked_tool_calls
@@ -529,8 +539,8 @@ class TestSelfEdit(unittest.TestCase):
     def _repo(self):
         import subprocess
         root = tempfile.mkdtemp(); h = os.path.join(root, "harness"); os.makedirs(os.path.join(h, "tests"))
-        open(os.path.join(h, "__init__.py"), "w").close(); open(os.path.join(h, "cli.py"), "w").write("VALUE = 1\n")
-        open(os.path.join(h, "tests", "test_v.py"), "w").write("import unittest\nfrom harness import cli\nclass T(unittest.TestCase):\n    def test(self): self.assertEqual(cli.VALUE, 1)\n")
+        open(os.path.join(h, "__init__.py"), "w").close(); write_file(os.path.join(h, "cli.py"), "w", "VALUE = 1\n")
+        write_file(os.path.join(h, "tests", "test_v.py"), "w", "import unittest\nfrom harness import cli\nclass T(unittest.TestCase):\n    def test(self): self.assertEqual(cli.VALUE, 1)\n")
         for c in (["init", "-q"], ["add", "-A"], ["-c", "user.email=a@b", "-c", "user.name=t", "commit", "-qm", "init"]): subprocess.run(["git", *c], cwd=root, check=True)
         return root, h
 
@@ -538,20 +548,20 @@ class TestSelfEdit(unittest.TestCase):
         from harness import selfedit
         root, h = self._repo(); os.environ.update(GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="a@b", GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="a@b")
         base = selfedit.snapshot(h)
-        open(os.path.join(h, "cli.py"), "w").write("VALUE = 2\n"); open(os.path.join(h, "new.py"), "w").write("x = 1\n")
+        write_file(os.path.join(h, "cli.py"), "w", "VALUE = 2\n"); write_file(os.path.join(h, "new.py"), "w", "x = 1\n")
         self.assertEqual(sorted(os.path.basename(f) for f in selfedit.changed(base, h)), ["cli.py", "new.py"])
         ok, tail = selfedit.verify(root); self.assertFalse(ok)                                   # test pins VALUE == 1
         selfedit.rollback(base, h)
-        self.assertEqual(open(os.path.join(h, "cli.py")).read(), "VALUE = 1\n"); self.assertFalse(os.path.exists(os.path.join(h, "new.py")))
-        open(os.path.join(h, "cli.py"), "w").write("VALUE = 1\nOTHER = 3\n")
+        self.assertEqual(read_text(os.path.join(h, "cli.py")), "VALUE = 1\n"); self.assertFalse(os.path.exists(os.path.join(h, "new.py")))
+        write_file(os.path.join(h, "cli.py"), "w", "VALUE = 1\nOTHER = 3\n")
         ok, _ = selfedit.verify(root); self.assertTrue(ok)
         self.assertTrue(selfedit.commit("add OTHER", h)); self.assertEqual(selfedit.changed(selfedit.snapshot(h), h), [])
 
     def test_dirty_tree_is_snapshotted(self):
         from harness import selfedit
         root, h = self._repo(); os.environ.update(GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="a@b", GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="a@b")
-        open(os.path.join(h, "cli.py"), "w").write("VALUE = 1\n# wip\n"); base = selfedit.snapshot(h)
-        selfedit.rollback(base, h); self.assertIn("# wip", open(os.path.join(h, "cli.py")).read())   # the snapshot, not the original, is the base
+        write_file(os.path.join(h, "cli.py"), "w", "VALUE = 1\n# wip\n"); base = selfedit.snapshot(h)
+        selfedit.rollback(base, h); self.assertIn("# wip", read_text(os.path.join(h, "cli.py")))   # the snapshot, not the original, is the base
 
     def test_restart_argv(self):
         from harness.selfedit import restart_argv
@@ -563,7 +573,7 @@ class TestSelfEdit(unittest.TestCase):
 class TestGlobalShell(unittest.TestCase):
     def test_bash_tool_sees_bashrc_aliases_and_no_job_control_noise(self):
         from harness.cctools import State, cc_toolbox
-        home = tempfile.mkdtemp(); open(os.path.join(home, ".bashrc"), "w").write("alias hello_alice='echo from-rc'\nexport RC_VAR=yes\n")
+        home = tempfile.mkdtemp(); write_file(os.path.join(home, ".bashrc"), "w", "alias hello_alice='echo from-rc'\nexport RC_VAR=yes\n")
         old = os.environ.get("HOME"); os.environ["HOME"] = home
         try:
             tb = cc_toolbox(State(tempfile.mkdtemp()))
@@ -615,12 +625,12 @@ class TestDiffCommand(unittest.TestCase):
     def test_diff_shows_last_turn_changes(self):
         import io, contextlib
         from harness.cli import App, parse
-        d = tempfile.mkdtemp(); f = os.path.join(d, "a.txt"); open(f, "w").write("one\ntwo\n")
+        d = tempfile.mkdtemp(); f = os.path.join(d, "a.txt"); write_file(f, "w", "one\ntwo\n")
         l = FakeLLM([say("x")]); l.model = "fake"; a = App(parse(["--root", d, "--no-mcp", "--no-stream"]), l)
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
             a.c_diff("")
-            a.state.turns.append({"n": 0, "files": [(f, "one\ntwo\n")]}); open(f, "w").write("one\nTWO\n"); a.c_diff("")
+            a.state.turns.append({"n": 0, "files": [(f, "one\ntwo\n")]}); write_file(f, "w", "one\nTWO\n"); a.c_diff("")
         out = buf.getvalue()
         self.assertIn("changed no files", out); self.assertIn("a.txt", out); self.assertIn("-two", out); self.assertIn("+TWO", out)
 
@@ -652,7 +662,7 @@ class TestUnloadOllama(unittest.TestCase):
             def do_POST(self):
                 calls.append(_j.loads(self.rfile.read(int(self.headers["Content-Length"]))))
                 self.send_response(200); self.end_headers(); self.wfile.write(b"{}")
-        srv = http.server.HTTPServer(("127.0.0.1", 0), H); threading.Thread(target=srv.serve_forever, daemon=True).start()
+        srv = http.server.HTTPServer(("127.0.0.1", 0), H); threading.Thread(target=srv.serve_forever, daemon=True).start(); self.addCleanup(srv.server_close)
         self.assertEqual(unload_ollama(host=f"127.0.0.1:{srv.server_port}"), ["m1"])
         self.assertEqual(calls, [{"model": "m1", "keep_alive": 0}]); srv.shutdown()
 
@@ -669,7 +679,7 @@ class TestServerCleanup(unittest.TestCase):
                 "s.start(wait=20);print(s.proc.pid,flush=True);time.sleep(60)")
         env = {**os.environ, "PYTHONPATH": os.path.join(os.path.dirname(__file__), "..", ".."), "HOME": tempfile.mkdtemp()}
         p = subprocess.Popen([_s.executable, "-c", code, fake], stdout=subprocess.PIPE, env=env)
-        child = int(p.stdout.readline()); p.send_signal(sig); p.wait(10)
+        child = int(p.stdout.readline()); p.send_signal(sig); p.wait(10); p.stdout.close()
         for _ in range(30):
             try: os.kill(child, 0)
             except ProcessLookupError: return True
@@ -703,13 +713,13 @@ class TestExtras(unittest.TestCase):
 
     def test_notebook_edit(self):
         p = os.path.join(self.d, "n.ipynb")
-        json.dump({"cells": [], "metadata": {}, "nbformat": 4, "nbformat_minor": 5}, open(p, "w"))
+        write_json(p, {"cells": [], "metadata": {}, "nbformat": 4, "nbformat_minor": 5})
         self.tb.call("NotebookEdit", {"notebook_path": "n.ipynb", "new_source": "x=1", "cell_number": 0, "edit_mode": "insert"})
-        self.assertEqual(json.load(open(p))["cells"][0]["source"], ["x=1"])
+        self.assertEqual(read_json(p)["cells"][0]["source"], ["x=1"])
         self.assertIn("error", self.tb.call("NotebookEdit", {"notebook_path": "n.ipynb", "cell_number": 5, "edit_mode": "delete"}))
 
     def test_write_snapshots_for_rewind(self):
-        p = os.path.join(self.d, "f.txt"); open(p, "w").write("old")
+        p = os.path.join(self.d, "f.txt"); write_file(p, "w", "old")
         self.tb.call("Read", {"file_path": "f.txt"})
         self.st.turns.append({"n": 0, "files": []})
         self.tb.call("Write", {"file_path": "f.txt", "content": "new"})
@@ -717,7 +727,7 @@ class TestExtras(unittest.TestCase):
 
     def test_custom_agents_discovered(self):
         os.makedirs(os.path.join(self.d, ".alice", "agents"))
-        open(os.path.join(self.d, ".alice", "agents", "rev.md"), "w").write(
+        write_file(os.path.join(self.d, ".alice", "agents", "rev.md"), "w", 
             "---\nname: reviewer\ndescription: reviews code\ntools: Read, Grep\n---\nYou review.\n")
         a = context.discover_agents(self.d)
         self.assertEqual(a["reviewer"]["tools"], ["Read", "Grep"])
@@ -794,9 +804,8 @@ class TestLlamaBackend(unittest.TestCase):
         self.addCleanup(os.environ.pop, "OLLAMA_MODELS", None)
         os.makedirs(os.path.join(st, "manifests/hf.co/u/r")); os.makedirs(os.path.join(st, "blobs"))
         blob = os.path.join(st, "blobs", "sha256-abc"); open(blob, "w").close()
-        json.dump({"layers": [{"mediaType": "application/vnd.ollama.image.projector", "digest": "sha256:zzz"},
-                              {"mediaType": "application/vnd.ollama.image.model", "digest": "sha256:abc"}]},
-                  open(os.path.join(st, "manifests/hf.co/u/r/Q4"), "w"))
+        write_json(os.path.join(st, "manifests/hf.co/u/r/Q4"), {"layers": [{"mediaType": "application/vnd.ollama.image.projector", "digest": "sha256:zzz"},
+                              {"mediaType": "application/vnd.ollama.image.model", "digest": "sha256:abc"}]})
         self.assertEqual(ollama_blob("hf.co/u/r:Q4"), blob)
         self.assertEqual(gguf_args("hf.co/u/r:Q4"), ["-m", blob])
         self.assertEqual(ollama_blob("hf.co/u/missing:Q4"), "")

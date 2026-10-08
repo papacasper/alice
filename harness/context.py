@@ -1,6 +1,7 @@
 """Everything that goes into the model's context besides the chat: system prompt, CLAUDE.md memory,
 environment block, skills, custom slash commands, and layered settings."""
 import datetime, json, os, platform, re, subprocess
+from .fsutil import read_text
 
 HOME = os.path.expanduser("~")
 USER_DIRS = [os.path.join(HOME, ".claude"), os.path.join(HOME, ".alice")]   # later wins
@@ -10,7 +11,7 @@ def _load_prompt() -> str:
     """Global system prompt: ~/.alice/SYSTEM.md replaces the shipped harness/system_prompt.md when it exists."""
     for f in (os.path.join(HOME, ".alice", "SYSTEM.md"), os.path.join(os.path.dirname(__file__), "system_prompt.md")):
         try:
-            t = open(f).read().strip()
+            t = read_text(f).strip()
             if t: return t
         except OSError: pass
     return "You are Alice, a concise CLI agent. Use your tools; never guess."
@@ -163,5 +164,5 @@ def output_styles() -> list[str]:
 
 def output_style(name: str) -> str:
     if name in STYLES: return STYLES[name]
-    try: return open(os.path.join(HOME, ".alice", "output-styles", name + ".md")).read().strip()[:2000]
+    try: return read_text(os.path.join(HOME, ".alice", "output-styles", name + ".md")).strip()[:2000]
     except OSError: return ""

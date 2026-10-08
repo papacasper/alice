@@ -7,6 +7,8 @@
 Usage: python3 evals/live_checks.py [slot-restore] [helper-compact] [--helper MODEL]
 """
 import argparse, glob, json, os, subprocess, sys, tempfile, time
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from harness.fsutil import append_line, write_file, write_json
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "live_results.jsonl")
@@ -16,7 +18,7 @@ CODE = "PELICAN-4471"
 def setup(d):
     # ~3k tokens of filler so a cache hit is measurable, with one fact to recall
     body = "\n".join(f"line {i}: the quick brown fox jumps over the lazy dog, entry {i * 7} of the ledger." for i in range(120))   # one Read page, so the check tests the restore and not paging
-    open(os.path.join(d, "ledger.txt"), "w").write(body[: len(body) // 2] + f"\nThe vault codeword is {CODE}.\n" + body[len(body) // 2:])
+    write_file(os.path.join(d, "ledger.txt"), "w", body[: len(body) // 2] + f"\nThe vault codeword is {CODE}.\n" + body[len(body) // 2:])
 
 MODEL = []   # --model for the checks, set from the command line
 
@@ -58,7 +60,7 @@ print("RESULT " + json.dumps({"secs": round(secs, 1), "back_on_main": app.llm.mo
 def compact_run(helper):
     d = tempfile.mkdtemp(prefix="live-compact-"); setup(d)
     if helper:
-        os.makedirs(os.path.join(d, ".alice")); json.dump({"helperModel": helper}, open(os.path.join(d, ".alice", "settings.json"), "w"))
+        os.makedirs(os.path.join(d, ".alice")); write_json(os.path.join(d, ".alice", "settings.json"), {"helperModel": helper})
     p = subprocess.run([sys.executable, "-c", COMPACT, d], cwd=ROOT, capture_output=True, text=True, timeout=900)
     line = next((l for l in p.stdout.splitlines() if l.startswith("RESULT ")), None)
     return json.loads(line[7:]) if line else {"error": p.stderr[-400:]}
@@ -78,5 +80,5 @@ if __name__ == "__main__":
         MODEL[:] = ["--model", a.slot_model] if name == "slot-restore" else []
         ok, info = slot_restore() if name == "slot-restore" else helper_compact(a.helper)
         row = {"check": name, "ok": ok, "secs": round(time.time() - t0, 1), "ts": time.strftime("%F %T"), **info}
-        open(OUT, "a").write(json.dumps(row) + "\n")
+        append_line(OUT, json.dumps(row))
         print(("PASS " if ok else "FAIL ") + name + "  " + json.dumps(info))

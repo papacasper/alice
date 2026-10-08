@@ -1,6 +1,7 @@
 """Built-in tools. Filesystem tools are confined to a root directory; write/shell are opt-in."""
 import ast, datetime, operator, os, re, subprocess
 from .tools import Tool, Toolbox
+from .fsutil import read_text
 
 _OPS = {ast.Add: operator.add, ast.Sub: operator.sub, ast.Mult: operator.mul, ast.Div: operator.truediv,
         ast.FloorDiv: operator.floordiv, ast.Mod: operator.mod, ast.Pow: operator.pow,
@@ -111,7 +112,7 @@ def fs_tools(root: str) -> list[Tool]:
             for fn in sorted(fns):
                 full = os.path.join(dp, fn)
                 try:
-                    lines = open(full, errors="strict").read().splitlines()
+                    lines = read_text(full, errors="strict").splitlines()
                 except (UnicodeDecodeError, OSError):
                     continue
                 for i, l in enumerate(lines, 1):

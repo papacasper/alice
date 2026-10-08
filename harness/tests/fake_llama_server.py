@@ -25,7 +25,8 @@ class H(BaseHTTPRequestHandler):
             n = json.loads(self.rfile.read(int(self.headers["Content-Length"])))["filename"]; d = args[args.index("--slot-save-path") + 1]
             act = self.path.split("action=")[1]
             slot = int(self.path.split("/slots/")[1].split("?")[0])
-            if act == "save": open(os.path.join(d, n), "w").write("kv" * SLOTS.get(slot, 0))   # like the real server: an unused slot saves ~nothing
+            if act == "save":
+                with open(os.path.join(d, n), "w") as f: f.write("kv" * SLOTS.get(slot, 0))   # like the real server: an unused slot saves ~nothing
             elif not os.path.isfile(os.path.join(d, n)): return self._json({}, 404)
             return self._json({"ok": True})
         req = json.loads(self.rfile.read(int(self.headers["Content-Length"]))); LOG.append(req)

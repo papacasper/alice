@@ -2,6 +2,9 @@
 real result (files, command output, the final answer's content), solution(dir) is a reference solution used to prove the
 check can pass (and `check` must fail on the untouched workspace). No task is graded on how the answer "sounds"."""
 import json, os, re, subprocess
+import sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from harness.fsutil import read_text, write_file
 from dataclasses import dataclass
 from typing import Callable
 
@@ -15,10 +18,10 @@ class Task:
     tags: tuple = ()
 
 def w(d, rel, text):
-    p = os.path.join(d, rel); os.makedirs(os.path.dirname(p), exist_ok=True); open(p, "w").write(text)
+    p = os.path.join(d, rel); os.makedirs(os.path.dirname(p), exist_ok=True); write_file(p, "w", text)
 
 def r(d, rel):
-    try: return open(os.path.join(d, rel)).read()
+    try: return read_text(os.path.join(d, rel))
     except OSError: return None
 
 def sh(d, cmd): return subprocess.run(cmd, shell=True, cwd=d, capture_output=True, text=True)

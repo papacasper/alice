@@ -48,6 +48,9 @@ class McpServer:
     def close(self):
         try: self.proc.terminate(); self.proc.wait(2)
         except (OSError, subprocess.TimeoutExpired): pass
+        for f in (self.proc.stdin, self.proc.stdout):
+            try: f and f.close()
+            except OSError: pass
 
 class McpTool(Tool):
     """A Tool whose schema comes straight from the server (no Python signature)."""

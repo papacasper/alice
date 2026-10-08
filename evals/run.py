@@ -7,6 +7,8 @@ Results append to evals/results.jsonl (one line per run) and a summary prints at
 import argparse, json, os, shutil, subprocess, sys, tempfile, time
 HERE = os.path.dirname(os.path.abspath(__file__)); ROOT = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
+sys.path.insert(0, ROOT)
+from harness.fsutil import append_line
 from tasks import TASKS
 
 def selftest() -> int:
@@ -55,6 +57,6 @@ if __name__ == "__main__":
     todo = [t for t in TASKS if not a.task or t.name in a.task]; rows = []
     for _ in range(a.repeat):
         for t in todo:
-            row = run_one(t, a); rows.append(row); open(os.path.join(HERE, "results.jsonl"), "a").write(json.dumps(row) + "\n")
+            row = run_one(t, a); rows.append(row); append_line(os.path.join(HERE, "results.jsonl"), json.dumps(row))
             print(f"{'PASS' if row['ok'] else 'FAIL'}  {t.name:16} {row['secs']:6.1f}s  {row.get('why', '')[:80]}", flush=True)
     n = sum(r["ok"] for r in rows); print(f"\n{n}/{len(rows)} passed · {sum(r['secs'] for r in rows):.0f}s · model={a.model or 'default'} think={a.think} tag={a.tag or '-'}")

@@ -2,6 +2,7 @@
 import atexit, html, json, os, re, shutil, signal, subprocess, tempfile, urllib.parse, urllib.request
 from .tools import Tool
 from . import shell as shellmod
+from .fsutil import read_json
 
 def start_job(st, command: str) -> str:
     jid = f"bash_{len(st.jobs) + 1}"
@@ -71,7 +72,7 @@ def bg_tools(st) -> list[Tool]:
         """
         p = st.path(notebook_path)
         if not os.path.isfile(p): return f"error: file does not exist: {p}"
-        nb = json.load(open(p)); cells = nb.get("cells", [])
+        nb = read_json(p); cells = nb.get("cells", [])
         if edit_mode not in ("replace", "insert", "delete"): return "error: edit_mode must be replace, insert or delete"
         if cell_type not in ("code", "markdown"): return "error: cell_type must be code or markdown"
         n = len(cells)

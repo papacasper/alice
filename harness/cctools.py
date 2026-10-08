@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from .bgtools import bg_tools, start_job
 from .builtin import calculate, today
 from .tools import Tool, Toolbox
+from .fsutil import read_text
 
 MARK = "__ALICE_CWD__"
 SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv", ".mypy_cache", ".cache"}
@@ -26,7 +27,9 @@ class State:
     ask_user: object = None                          # callable(question) -> str                (AskUserQuestion)
     approve_plan: object = None                      # callable(plan) -> bool                   (ExitPlanMode)
     plan_mode: object = None                         # callable() -> bool
-    ui_extra: str = ""                               # last diff, for the renderer to show
+    ui_extra: str = ""                               # last diff, for the renderer to show (first 60 lines)
+    ui_counts: tuple = (0, 0)                        # last diff's full (+added, -removed); ui_extra may be cut
+    lines: list = field(default_factory=lambda: [0, 0])   # session totals (added, removed): status line cost.total_lines_*
     jobs: dict = field(default_factory=dict)         # background shells: id -> {proc, file, cmd, pos}
     turns: list = field(default_factory=list)        # per-turn undo log: {"n": msg index, "files": [(path, old|None)]}
     agents: dict = field(default_factory=dict)       # custom subagents: name -> {description, tools, prompt}
@@ -34,7 +37,7 @@ class State:
     def snap(self, p: str):
         """Remember a file's current content (or absence) so /rewind can restore it."""
         if self.turns and not any(p == q for q, _ in self.turns[-1]["files"]):
-            self.turns[-1]["files"].append((p, open(p, errors="replace").read() if os.path.isfile(p) else None))
+            self.turns[-1]["files"].append((p, read_text(p, errors="replace") if os.path.isfile(p) else None))
 
     def path(self, p: str) -> str:
         p = os.path.expanduser(p)
@@ -92,12 +95,13 @@ def build_tools(st: State) -> list[Tool]:
             return f"error: {p} already exists and has not been Read in this session. Read it first, then Write."
         if existed and _mtime(p) != st.read_files.get(p):
             return f"error: {p} changed on disk since you read it. Read it again first."
-        old = open(p, errors="replace").read() if existed else ""
+        old = read_text(p, errors="replace") if existed else ""
         st.snap(p)
         os.makedirs(os.path.dirname(p) or ".", exist_ok=True)
         with open(p, "w") as f: f.write(content)
         st.read_files[p] = _mtime(p)
-        st.ui_extra = _diff(old, content, p) if existed else ""
+        st.ui_extra = _diff(st, old, content, p) if existed else ""
+        if not existed: st.lines[0] += len(content.splitlines())
         return f"{'Overwrote' if existed else 'Created'} {p} ({len(content.splitlines())} lines)"
 
     def Edit(file_path: str, old_string: str, new_string: str, replace_all: bool = False) -> str:
@@ -115,7 +119,7 @@ def build_tools(st: State) -> list[Tool]:
         if _mtime(p) != st.read_files[p]: return f"error: {p} changed on disk since you read it. Read it again first."
         if old_string == new_string: return "error: old_string and new_string are identical"
         if not old_string: return "error: old_string is empty; use Write to create or replace a whole file"
-        text = open(p, errors="replace").read()
+        text = read_text(p, errors="replace")
         n = text.count(old_string)
         if n == 0: return "error: old_string not found in the file. Copy it exactly from a fresh Read (watch whitespace/indentation)."
         if n > 1 and not replace_all:
@@ -124,7 +128,7 @@ def build_tools(st: State) -> list[Tool]:
         st.snap(p)
         with open(p, "w") as f: f.write(new)
         st.read_files[p] = _mtime(p)
-        st.ui_extra = _diff(text, new, p)
+        st.ui_extra = _diff(st, text, new, p)
         return f"Edited {p}: replaced {n if replace_all else 1} occurrence(s)"
 
     def Bash(command: str, timeout: int = 120, description: str = "", run_in_background: bool = False) -> str:
@@ -273,7 +277,7 @@ def build_tools(st: State) -> list[Tool]:
         """
         if name not in st.skills: return f"error: unknown skill '{name}'; available: {sorted(st.skills)}"
         path = st.skills[name][1]
-        return f"[skill {name} from {os.path.dirname(path)}]\n" + open(path, errors="replace").read()[:5500]
+        return f"[skill {name} from {os.path.dirname(path)}]\n" + read_text(path, errors="replace")[:5500]
 
     def AskUserQuestion(question: str) -> str:
         """Ask the user a clarifying question and wait for their typed answer. Use only when you are genuinely blocked on a choice only the user can make.
@@ -307,8 +311,12 @@ def _globstar(rel: str, pattern: str) -> bool:
     """'**/*.py' also matches top-level files; fnmatch's '*' already crosses '/', so only handle the '**/' prefix."""
     return pattern.startswith("**/") and fnmatch.fnmatch(rel, pattern[3:])
 
-def _diff(old: str, new: str, path: str) -> str:
+def _diff(st: State, old: str, new: str, path: str) -> str:
+    """Diff for display (first 60 lines); the full +/- counts go to st.ui_counts and the session totals in st.lines."""
     d = list(difflib.unified_diff(old.splitlines(), new.splitlines(), os.path.basename(path), os.path.basename(path), lineterm="", n=2))
+    body = [l for l in d[2:] if not l.startswith("@@")]
+    st.ui_counts = (sum(l.startswith("+") for l in body), sum(l.startswith("-") for l in body))
+    st.lines[0] += st.ui_counts[0]; st.lines[1] += st.ui_counts[1]
     return "\n".join(d[:60])
 
 def _py_grep(pattern, target, glob, mode, icase):
@@ -318,7 +326,7 @@ def _py_grep(pattern, target, glob, mode, icase):
     out = []
     for f in files:
         if glob and not fnmatch.fnmatch(os.path.basename(f), glob): continue
-        try: lines = open(f, errors="strict").read().splitlines()
+        try: lines = read_text(f, errors="strict").splitlines()
         except (UnicodeDecodeError, OSError): continue
         hits = [(i, l) for i, l in enumerate(lines, 1) if rx.search(l)]
         if not hits: continue

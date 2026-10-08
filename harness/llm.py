@@ -1,6 +1,7 @@
 """LLM backends (stdlib only): OllamaClient (/api/chat) and OpenAIClient (/v1/chat/completions: llama.cpp llama-server, LM Studio, vLLM, ...)."""
 from . import profiles
 import glob, re, sys, atexit, ctypes, json, signal, os, shutil, socket, subprocess, time, urllib.error, urllib.request
+from .fsutil import read_json, read_text
 
 DEFAULT_MODEL = "hf.co/mradermacher/Huihui-Qwen3.5-9B-abliterated-GGUF:Q4_K_M"
 
@@ -240,7 +241,7 @@ def ollama_blob(model: str, kind: str = "model") -> str:
               "/usr/share/ollama/.ollama/models"]
     for st in filter(None, stores):
         try:
-            for l in json.load(open(os.path.join(st, "manifests", *parts, tag)))["layers"] or []:
+            for l in read_json(os.path.join(st, "manifests", *parts, tag))["layers"] or []:
                 f = os.path.join(st, "blobs", l["digest"].replace(":", "-"))
                 if l["mediaType"].endswith("image." + kind) and os.access(f, os.R_OK): return f
         except (OSError, ValueError, KeyError): continue
@@ -407,9 +408,9 @@ class LlamaServer:
                            "or set ALICE_LLAMA_SERVER to its path, or pass --base-url to use a server that is already running.")
         unload_ollama(say)
         os.makedirs(os.path.dirname(self.log), exist_ok=True)
-        logf = open(self.log, "w")
-        self.proc = subprocess.Popen(self.command(), stdout=logf, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
-                                     start_new_session=True, preexec_fn=_die_with_parent)
+        with open(self.log, "w") as logf:   # the child keeps its own copy of the fd; ours closes here
+            self.proc = subprocess.Popen(self.command(), stdout=logf, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+                                         start_new_session=True, preexec_fn=_die_with_parent)
         atexit.register(self.stop)
         for sig in (signal.SIGTERM, signal.SIGHUP):  # default action skips atexit and would orphan the server (and its VRAM)
             signal.signal(sig, lambda n, f: sys.exit(128 + n))
@@ -417,7 +418,7 @@ class LlamaServer:
         end = time.time() + wait
         while time.time() < end:
             if self.proc.poll() is not None:
-                tail = open(self.log, errors="replace").read()[-600:]
+                tail = read_text(self.log, errors="replace")[-600:]
                 raise LLMError(f"llama-server exited with code {self.proc.returncode}:\n{tail}")
             try:
                 with urllib.request.urlopen(self.host + "/health", timeout=2) as r:

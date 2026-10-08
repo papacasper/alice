@@ -1,5 +1,7 @@
 # Alice
 
+[![test](https://github.com/papacasper/alice/actions/workflows/test.yml/badge.svg)](https://github.com/papacasper/alice/actions/workflows/test.yml)
+
 A Claude Code–style coding agent for local models. It runs on one consumer GPU (built and tested on an 8 GB RTX 4060) with llama.cpp's `llama-server` or Ollama. The default model is an abliterated Qwen3.5-9B GGUF.
 
 Alice has the Claude Code feel: Read/Edit/Write/Bash/Grep/Glob tools, permission modes, slash commands, subagents, hooks, MCP servers, skills, sessions you can resume, a status line, and a remote-control web page.
@@ -31,7 +33,7 @@ Settings live in `~/.alice/settings.json` and `./.alice/settings.json`. See [har
 ## Tests and evals
 
 ```sh
-python3 -m unittest discover -s harness/tests   # no model needed (fake LLM and a fake llama-server)
+python3 -m unittest discover -s harness/tests   # no model needed (fake LLM and a fake llama-server); CI runs this on 3.10 and latest
 python3 evals/run.py --selftest                 # every eval check fails untouched and passes on its reference solution
 python3 evals/run.py --repeat 3                 # 14 real tasks on the live model, graded by deterministic checks
 python3 evals/live_checks.py                    # KV-cache restore and helper-model compaction
@@ -44,7 +46,7 @@ Results append to `evals/results.jsonl`. With the default model and thinking on 
 - `harness/`: the agent: loop, tools, CLI, prompt UI, backends.
 - `evals/`: task suite, runner, and live checks.
 - `ctxguard.py`: keeps the conversation inside the context window without dropping the task.
-- `bench.py`, `repro.py`, `setup.py`: older benchmark and regression scripts. `setup.py` builds a benchmark sandbox; it is not a packaging script.
+- `bench.py`, `repro.py`, `make_sandbox.py`: older benchmark and regression scripts (`make_sandbox.py <dir>` builds the benchmark sandbox).
 
 ## License
 

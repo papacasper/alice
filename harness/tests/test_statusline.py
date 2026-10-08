@@ -1,6 +1,7 @@
 import json, os, shutil, subprocess, tempfile, time, unittest
 from types import SimpleNamespace
 from harness import statusline
+from harness.fsutil import read_json
 
 
 def fake_app(**over):
@@ -20,6 +21,9 @@ class TestStatusLine(unittest.TestCase):
         self.assertEqual((c["context_window_size"], c["used_percentage"], c["remaining_percentage"]), (32768, 25, 75))
         self.assertEqual(c["current_usage"], {"input_tokens": 200, "output_tokens": 40, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 600})
         self.assertEqual(d["model"]["display_name"], "Qwen3.5-9B:Q4")
+        self.assertEqual((d["cost"]["total_lines_added"], d["cost"]["total_lines_removed"]), (0, 0))
+        d = statusline.payload(fake_app(state=SimpleNamespace(lines=[12, 3])), 0, "1")
+        self.assertEqual((d["cost"]["total_lines_added"], d["cost"]["total_lines_removed"]), (12, 3))
         self.assertIsNone(statusline.payload(fake_app(llm=SimpleNamespace(model="m", num_ctx=4096, usage={}, last={})), 0, "1")["context_window"]["current_usage"])
 
     def test_builtin_line(self):
@@ -45,9 +49,9 @@ class TestStatusLine(unittest.TestCase):
         f = os.path.join(tempfile.mkdtemp(), "settings.json"); st = {}
         self.assertIn("built-in", statusline.configure(st, "", f))
         statusline.configure(st, "echo hi", f)
-        self.assertEqual(json.load(open(f))["statusLine"]["command"], "echo hi"); self.assertEqual(st["statusLine"]["command"], "echo hi")
-        statusline.configure(st, "off", f); self.assertIs(json.load(open(f))["statusLine"], False)
-        statusline.configure(st, "on", f); self.assertNotIn("statusLine", json.load(open(f))); self.assertNotIn("statusLine", st)
+        self.assertEqual(read_json(f)["statusLine"]["command"], "echo hi"); self.assertEqual(st["statusLine"]["command"], "echo hi")
+        statusline.configure(st, "off", f); self.assertIs(read_json(f)["statusLine"], False)
+        statusline.configure(st, "on", f); self.assertNotIn("statusLine", read_json(f)); self.assertNotIn("statusLine", st)
 
     @unittest.skipUnless(os.path.exists(os.path.expanduser(statusline.CLAUDE_SCRIPT)) and shutil.which("jq"), "no Claude Code statusline script")
     def test_users_claude_code_script_renders_alice_payload(self):
