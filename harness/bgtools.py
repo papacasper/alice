@@ -6,17 +6,21 @@ from .fsutil import read_json
 
 def start_job(st, command: str) -> str:
     jid = f"bash_{len(st.jobs) + 1}"
-    f = tempfile.NamedTemporaryFile("w+", prefix="alice-job-", suffix=".log", delete=False)
-    proc = subprocess.Popen(shellmod.argv(command), cwd=st.cwd, stdin=subprocess.DEVNULL, stdout=f,
-                            stderr=subprocess.STDOUT, start_new_session=True)
+    with tempfile.NamedTemporaryFile("w+", prefix="alice-job-", suffix=".log", delete=False) as f:   # the child keeps its own fd
+        proc = subprocess.Popen(shellmod.argv(command), cwd=st.cwd, stdin=subprocess.DEVNULL, stdout=f,
+                                stderr=subprocess.STDOUT, start_new_session=True)
     st.jobs[jid] = {"proc": proc, "file": f.name, "cmd": command, "pos": 0}
     atexit.register(lambda: _kill(proc))
     return f"Started background shell {jid} (pid {proc.pid}). Poll it with BashOutput(bash_id='{jid}'); stop it with KillShell."
 
 def _kill(proc):
-    if proc.poll() is None:
-        try: os.killpg(proc.pid, signal.SIGTERM)
+    """SIGTERM the job's process group, SIGKILL it if still alive after 2 s, and reap it (no zombie left behind)."""
+    if proc.poll() is not None: return
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        try: os.killpg(proc.pid, sig)
         except OSError: pass
+        try: proc.wait(2); return
+        except subprocess.TimeoutExpired: pass
 
 def http_get(url: str, timeout: int = 20, limit: int = 600_000) -> str:
     """GET via Node's fetch (DuckDuckGo bot-challenges Python's and curl's TLS fingerprints), then curl, then urllib."""

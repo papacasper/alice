@@ -709,6 +709,8 @@ class TestExtras(unittest.TestCase):
         import time; time.sleep(0.4)
         self.assertIn("hi", self.tb.call("BashOutput", {"bash_id": "bash_1"}))
         self.assertIn("Killed", self.tb.call("KillShell", {"shell_id": "bash_1"}))
+        self.assertIsNotNone(self.st.jobs["bash_1"]["proc"].returncode)   # reaped, not a zombie
+        self.assertIn("exited", self.tb.call("BashOutput", {"bash_id": "bash_1"}))
         self.assertIn("error", self.tb.call("BashOutput", {"bash_id": "nope"}))
 
     def test_notebook_edit(self):
