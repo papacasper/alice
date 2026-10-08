@@ -45,3 +45,7 @@ Results append to `evals/results.jsonl`. With the default model and thinking on 
 - `evals/`: task suite, runner, and live checks.
 - `ctxguard.py`: keeps the conversation inside the context window without dropping the task.
 - `bench.py`, `repro.py`, `setup.py`: older benchmark and regression scripts. `setup.py` builds a benchmark sandbox; it is not a packaging script.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
