@@ -1,5 +1,5 @@
 """Slash commands (/help, /model, /compact, ...): a mixin for cli.App, which supplies llm, agent, state, toolbox, settings."""
-import atexit, json, os, shutil, subprocess, sys
+import atexit, json, os, re, shutil, subprocess, sys, textwrap
 from . import context, sessions, ui
 from ctxguard import est_tokens
 from .llm import LLMError
@@ -32,6 +32,18 @@ class Commands:
                    ("Setup", "add-dir rc selfedit restart init memory config doctor tools skills agents plugins mcp hooks"),
                    ("Work", "todos tasks kill review security-review image")]
 
+    @staticmethod
+    def _wrap(text: str, indent: int) -> str:
+        """Fit a line to the terminal, breaking only between items so a command name is never split."""
+        w = max(shutil.get_terminal_size((100, 24)).columns - 1, 20)
+        items = [i for i in re.split(r" {3,}|(?<=\S)  (?=/)", text.strip()) if i]      # gaps of 3+ spaces (or between /names) separate items
+        lines, cur = [], ""
+        items = [x for it in items for x in (textwrap.wrap(it, w - indent, break_long_words=False) if len(it) + indent > w else [it])]
+        for it in items:
+            if cur and len(cur) + 3 + len(it) + indent > w: lines.append(cur); cur = it
+            else: cur = f"{cur}   {it}" if cur else it
+        return "\n".join(" " * indent + l for l in lines + [cur] if l)
+
     def c_help(self, arg):
         """/help lists every command by group; /help <command> shows one."""
         from .prompt import SLASH_HELP, SHORTCUTS
@@ -43,10 +55,10 @@ class Commands:
         groups = self.HELP_GROUPS + [("Custom", " ".join(sorted(self.commands)))] if self.commands else self.HELP_GROUPS
         for g, names in groups:
             names = [n for n in names.split() if n in h]
-            if names: print(f"  {ui.bold(g)}\n    " + "  ".join(f"/{n}" for n in names))
+            if names: print(f"  {ui.bold(g)}\n" + self._wrap("  ".join(f"/{n}" for n in names), 4))
         rest = sorted(n for n in h if n not in grouped and n not in self.commands and n not in ("help", "exit"))
-        if rest: print(f"  {ui.bold('Other')}\n    " + "  ".join(f"/{n}" for n in rest))
-        print(f"\n{SHORTCUTS}\n  {ui.dim('/help <command> for details')}")
+        if rest: print(f"  {ui.bold('Other')}\n" + self._wrap("  ".join(f"/{n}" for n in rest), 4))
+        print("\n" + "\n".join(self._wrap(l, 2) for l in SHORTCUTS.split("\n")) + f"\n  {ui.dim('/help <command> for details')}")
 
     def c_clear(self, _):
         self.agent.reset(); self.state.todos.clear(); self.state.read_files.clear()

@@ -7,7 +7,7 @@ from .fsutil import read_json
 def start_job(st, command: str) -> str:
     jid = f"bash_{len(st.jobs) + 1}"
     with tempfile.NamedTemporaryFile("w+", prefix="alice-job-", suffix=".log", delete=False) as f:   # the child keeps its own fd
-        proc = subprocess.Popen(shellmod.argv(command), cwd=st.cwd, stdin=subprocess.DEVNULL, stdout=f,
+        proc = subprocess.Popen(shellmod.argv(command), cwd=st.cwd, env=shellmod.env(), stdin=subprocess.DEVNULL, stdout=f,
                                 stderr=subprocess.STDOUT, start_new_session=True)
     st.jobs[jid] = {"proc": proc, "file": f.name, "cmd": command, "pos": 0}
     atexit.register(lambda: _kill(proc))

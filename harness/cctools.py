@@ -142,7 +142,7 @@ def build_tools(st: State) -> list[Tool]:
         """
         if run_in_background: return start_job(st, command)
         script = f'{command}\n__ec=$?\nprintf "\\n{MARK}%s\\n" "$PWD"\nexit $__ec'
-        p = subprocess.Popen(shellmod.argv(script), cwd=st.cwd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+        p = subprocess.Popen(shellmod.argv(script), cwd=st.cwd, env=shellmod.env(), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                              stderr=subprocess.PIPE, text=True, errors="replace", start_new_session=True)
         try:
             out, err = p.communicate(timeout=max(1, min(int(timeout), 600)))

@@ -585,6 +585,22 @@ class TestGlobalShell(unittest.TestCase):
             os.environ.pop("ALICE_PLAIN_BASH", None)
             os.environ["HOME"] = old
 
+    def test_bash_tool_finds_home_bin_commands_without_term_noise(self):
+        """Launched with a bare env (cron, systemd, /rc): ~/bin comes from ~/.bashrc, and TERM-less tput stays quiet."""
+        from harness.cctools import State, cc_toolbox
+        home = tempfile.mkdtemp(); os.makedirs(os.path.join(home, "bin"))
+        write_file(os.path.join(home, "bin", "mytool"), "w", "#!/bin/sh\necho mytool-ran\n"); os.chmod(os.path.join(home, "bin", "mytool"), 0o755)
+        write_file(os.path.join(home, ".bashrc"), "w", 'PATH="$HOME/bin:$PATH"\nBOLD=$(tput bold)\n')
+        saved = {k: os.environ.get(k) for k in ("HOME", "PATH", "TERM")}
+        os.environ.update(HOME=home, PATH="/usr/bin:/bin"); os.environ.pop("TERM", None)
+        try:
+            out = cc_toolbox(State(tempfile.mkdtemp())).call("Bash", {"command": "mytool"})
+            self.assertIn("mytool-ran", out); self.assertNotIn("TERM", out); self.assertNotIn("[stderr]", out)
+        finally:
+            for k, v in saved.items():
+                if v is None: os.environ.pop(k, None)
+                else: os.environ[k] = v
+
 
 class TestSpinnerText(unittest.TestCase):
     def test_elapsed_and_verbs(self):
