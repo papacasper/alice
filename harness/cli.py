@@ -1,12 +1,12 @@
 """The Claude Code–style CLI: REPL with slash commands, permissions, hooks, MCP, sessions, subagents."""
 import argparse, atexit, contextlib, glob, json, os, re, shutil, sys, time
-from . import profiles, context, sessions, ui
+from . import context, models, profiles, sessions, ui
 from .agent import Agent
 from .cctools import READ_TOOLS, State, cc_toolbox
 from .hooks import Hooks
 from .prompt import Prompter
 from .llm import DEFAULT_MODEL, LLMError, LlamaServer, OllamaClient, OpenAIClient
-from .mcp import McpServer
+from . import mcp
 from .permissions import MODES, Permissions
 from .tools import Toolbox
 from .fsutil import read_bytes, read_text
@@ -25,7 +25,10 @@ def parse(argv=None):
     ap.add_argument("--disallowedTools", "--disallowed-tools", action="append", default=[], metavar="RULE")
     ap.add_argument("-c", "--continue", dest="cont", action="store_true", help="resume the latest session in this directory")
     ap.add_argument("-r", "--resume", nargs="?", const="", metavar="ID", help="resume a session by id (no id: list them)")
-    ap.add_argument("--output-format", choices=["text", "json"], default="text")
+    ap.add_argument("--output-format", choices=["text", "json", "stream-json"], default="text")
+    ap.add_argument("--input-format", choices=["text", "stream-json"], default="text", help="stream-json: NDJSON user messages on stdin (needs --output-format stream-json)")
+    ap.add_argument("--include-partial-messages", action="store_true", help="stream-json: also emit text deltas as they are generated")
+    ap.add_argument("--verbose", action="store_true", help=argparse.SUPPRESS)   # Claude Code requires it with -p stream-json; accepted here
     ap.add_argument("--system-prompt", "--system", dest="system", help="file replacing the default system prompt")
     ap.add_argument("--append-system-prompt", help="text appended to the system prompt")
     ap.add_argument("--tools-file", action="append", default=[], help="python file with @tool functions (repeatable)")
@@ -52,7 +55,7 @@ class App(Commands):
         ui.set_theme(str(self.settings.get("theme", "terracotta")))
         self.interactive = not (a.task or a.print or not sys.stdin.isatty()) and a.output_format == "text"
         model = a.model or self.settings.get("model") or DEFAULT_MODEL
-        self.llm = llm or self.make_llm(model, a.num_ctx or self.settings.get("num_ctx") or profiles.DEFAULT_CTX)
+        self.llm = llm or self.make_llm(model)
         self.sid = sessions.new_id()
         self.state = State(self.cwd); self.pending_images: list[str] = []
         self.state.skills = context.discover_skills(self.cwd)
@@ -62,19 +65,23 @@ class App(Commands):
             a.permission_mode or self.settings.get("permissionMode") or "bypassPermissions")
         p = self.settings.get("permissions", {})
         self.perms = Permissions(mode, p.get("allow", []) + a.allowedTools, p.get("deny", []) + a.disallowedTools,
-                                 ask=lambda n, args: ui.confirm(n, args))
+                                 ask=self.ask_permission)
         self.prev_mode = mode if mode != "plan" else "bypassPermissions"
         self.hooks = Hooks(self.settings.get("hooks"), self.cwd, self.sid)
-        self.mcp_servers: list[McpServer] = []
+        self.mcp_servers: list = []
         self.toolbox = cc_toolbox(self.state)
         for f in a.tools_file:
             for t in Toolbox.from_file(f): self.toolbox.add(t)
         if not a.no_mcp: self._start_mcp()
         stream = not a.no_stream and a.output_format == "text"
+        self.sj = None
+        if a.output_format == "stream-json":
+            from .streamjson import StreamJson
+            self.sj = StreamJson(self)
         self.started = time.time(); self.rc = None; self.at_prompt = False; self.extra_dirs = []; self.sname = ""; self.style = str(self.settings.get("outputStyle", "default"))
-        self.renderer = ui.Renderer(self.state, a.quiet or a.output_format == "json", stream=stream)
+        self.renderer = ui.Renderer(self.state, a.quiet or a.output_format != "text", stream=stream)
         self.agent = Agent(self.llm, self.toolbox, "", a.max_steps, self._on_event, gate=self.gate, post=self.post,
-                           on_token=self.renderer.token if stream else None)
+                           on_token=self.renderer.token if stream else self.sj.token if self.sj and a.include_partial_messages else None)
         self.state.spawn, self.state.plan_mode = self.spawn, lambda: self.perms.mode == "plan"
         self.state.ask_user = self.ask_user if self.interactive else None
         self.state.approve_plan = self.approve_plan if self.interactive else None
@@ -83,11 +90,15 @@ class App(Commands):
 
     # ---- wiring
     def _start_mcp(self):
-        for name, cfg in (self.settings.get("mcpServers") or {}).items():
+        servers, skipped = mcp.server_configs(self.settings, self.cwd)
+        if skipped: print(ui.dim(f"  .mcp.json servers not started (not approved): {', '.join(skipped)}; approve with "
+                                 '"enabledMcpjsonServers": [names] or "enableAllProjectMcpServers": true in settings'), file=sys.stderr)
+        for name, cfg in servers.items():
             try:
-                srv = McpServer(name, cfg["command"], cfg.get("args"), cfg.get("env"))
+                srv = mcp.connect(name, cfg)
+                atexit.register(srv.close)
                 for t in srv.tools(): self.toolbox.add(t)
-                self.mcp_servers.append(srv); atexit.register(srv.close)
+                self.mcp_servers.append(srv)
             except Exception as e:
                 print(ui.yellow(f"warning: MCP server '{name}' failed: {e}"), file=sys.stderr)
 
@@ -124,6 +135,21 @@ class App(Commands):
             if blocked: return f"error: blocked by hook: {msg}"
         return self.perms.check(name, args)
 
+    def ask_permission(self, name, args):
+        """Permissions.ask: PermissionRequest hooks may answer first (allow/deny); else Notification hooks, then the prompt."""
+        if self.hooks.has("PermissionRequest"):
+            blocked, msg = self.hooks.run("PermissionRequest", name, {"tool_input": args, "permission_mode": self.perms.mode})
+            if blocked: return "no"
+            if self.hooks.decision == "allow": return "yes"
+        self.notify("permission_prompt", f"Alice needs your permission to use {name}")
+        return ui.confirm(name, args)
+
+    def notify(self, kind, message):
+        if self.hooks.has("Notification"): self.hooks.run("Notification", kind, {"notification_type": kind, "message": message})
+
+    def end_session(self, reason):
+        if self.hooks.has("SessionEnd"): self.hooks.run("SessionEnd", reason, {"reason": reason})
+
     def post(self, name, args, out):
         if not self.hooks.has("PostToolUse"): return None
         blocked, msg = self.hooks.run("PostToolUse", name, {"tool_input": args, "tool_response": out})
@@ -143,7 +169,11 @@ class App(Commands):
         sub = Agent(self.llm, tb, sysm, 25, r.event, gate=self.gate, post=self.post)
         main_slot = getattr(self.llm, "slot", None)
         if main_slot is not None: self.llm.slot = main_slot + 1   # keep the main conversation's KV cache in its slot
-        try: res = sub.ask(prompt)
+        try:
+            res = sub.ask(prompt)
+            if self.hooks.has("SubagentStop"):
+                blocked, msg = self.hooks.run("SubagentStop", kind, {"subagent_type": kind, "answer": res.answer})
+                if blocked: res = sub.ask(f"[SubagentStop hook] {msg}")
         finally:
             if main_slot is not None: self.llm.slot = main_slot
         return res.answer + ("\n[subagent hit its step limit]" if res.status == "step_limit" else "")
@@ -213,7 +243,7 @@ class App(Commands):
             if msg: text += "\n\n" + msg
         if self.context_used() > 0.75 * self.llm.num_ctx:
             print(ui.dim("  (context is nearly full; compacting first)"), file=sys.stderr)
-            try: self.compact_now()
+            try: self.compact_now("auto")
             except LLMError: pass
         n, text = len(self.agent.messages), self.expand_mentions(text)
         self.state.turns.append({"n": n, "files": []})
@@ -246,6 +276,7 @@ class App(Commands):
     # ---- entry points
     def one_shot(self, task):
         self.renderer.show_answer = False   # printed once below; otherwise --output-format json got the answer text before the JSON
+        if self.sj: return self.stream_json([(task, [])])
         r = self.turn(task)
         if r is None: return 1
         if self.a.output_format == "json":
@@ -253,6 +284,15 @@ class App(Commands):
                               "session_id": self.sid, "usage": self.llm.usage}))
         elif not self.agent.on_token: print(r.answer)
         return 0 if r.status == "answered" else 2
+
+    def stream_json(self, inputs):
+        """Headless NDJSON session: an init line, then each input's events and a result line. Exit 0 if every turn succeeded."""
+        self.renderer.show_answer = False; self.sj.init(); ok = True
+        for text, imgs in inputs:
+            self.pending_images += imgs
+            t0, u0 = time.time(), dict(getattr(self.llm, "usage", {}) or {})
+            ok = self.sj.result(self.turn(text), t0, u0) and ok
+        return 0 if ok else 2
 
     def repl(self):
         self.prompter = Prompter(self)
@@ -265,7 +305,8 @@ class App(Commands):
                 readline.set_completer_delims(" \t\n"); readline.set_completer(self.complete); readline.parse_and_bind("tab: complete")
             except ImportError: pass
         ui.welcome(self.llm.model.split("/")[-1], self.perms.mode, self.cwd, f" · {len(self.toolbox.names())} tools")
-        for e in (self.hooks.run("SessionStart", "")[1:] if self.hooks.has("SessionStart") else []): print(e)
+        src = "resume" if self.a.resume or self.a.cont else "startup"
+        for e in (self.hooks.run("SessionStart", src, {"source": src})[1:] if self.hooks.has("SessionStart") else []): print(e)
         quit_armed = False
         while True:
             try:
@@ -288,32 +329,29 @@ class App(Commands):
                 continue
             self.turn(line); print()
 
-    def make_llm(self, model, num_ctx):
+    def make_llm(self, model):
+        e = models.effective(self.settings, model, self.a)    # per-model settings (settings.json "models"), CLI flags win
+        num_ctx, think = e["num_ctx"], {"on": True, "off": False}.get(e["think"], "auto")
         backend = self.a.backend or os.environ.get("ALICE_BACKEND") or self.settings.get("backend") or "llama"
         url = self.a.base_url or os.environ.get("ALICE_BASE_URL") or self.settings.get("baseUrl")
         if backend == "ollama":
-            c = OllamaClient(model, host=url or "http://localhost:11434", num_ctx=num_ctx, think=self.think_arg() is True)
+            c = OllamaClient(model, host=url or "http://localhost:11434", num_ctx=num_ctx, think=think is True)
             ok, info = c.health()
             if not ok: raise LLMError(f"{info}. Start it (sudo systemctl start ollama) or use --backend llama (the default) or set ALICE_BACKEND=ollama only if Ollama is running.")
             return c
         if url:   # connect to a server that is already running
-            c = OpenAIClient(model, host=url, num_ctx=num_ctx, think=self.think_arg(), api_key=os.environ.get("ALICE_API_KEY", ""))
-            c.sampling = {**(self.settings.get("sampling") or {}), **(self.a.sampling or {})}
+            c = OpenAIClient(model, host=url, num_ctx=num_ctx, think=think, api_key=os.environ.get("ALICE_API_KEY", ""))
+            c.sampling = e["sampling"]
             return c
         import shlex
-        srv = LlamaServer(model, num_ctx, extra=shlex.split(self.a.llama_server_args or self.settings.get("llamaServerArgs", "")),
+        srv = LlamaServer(model, num_ctx, extra=shlex.split(e["llamaServerArgs"]),
                           auto=profiles.server_flags(self.settings), slot_dir=os.path.expanduser("~/.alice/slots"))
         srv.prune_slots()
         host = srv.start(say=lambda m: print(ui.dim(f"  {m}"), file=sys.stderr))
-        c = OpenAIClient(model, host=host, num_ctx=num_ctx, think=self.think_arg()); c.server = srv; c.slot = 0
-        c.sampling = {**(self.settings.get("sampling") or {}), **(self.a.sampling or {})}
+        c = OpenAIClient(model, host=host, num_ctx=num_ctx, think=think); c.server = srv; c.slot = 0
+        c.sampling = e["sampling"]
         atexit.register(lambda: len(self.agent.messages) > 2 and srv.save_slot(self.sid))   # runs before the server is stopped
         return c
-
-    def think_arg(self):
-        """The --think value, else the "think" setting, else auto."""
-        v = self.a.think or str(self.settings.get("think", "auto"))
-        return {"on": True, "off": False}.get(v, "auto")
 
     def complete(self, text, i):
         """Tab completion: /commands, @paths and plain paths."""
@@ -344,10 +382,17 @@ def main(argv=None):
     if a.root and not os.path.isdir(os.path.expanduser(a.root)): print(f"no such directory: {a.root}", file=sys.stderr); return 1
     try: app = App(a)
     except LLMError as e: print(f"alice: {e}", file=sys.stderr); return 1
+    if a.input_format == "stream-json":
+        if a.output_format != "stream-json": print("alice: --input-format stream-json needs --output-format stream-json", file=sys.stderr); return 1
+        from .streamjson import read_inputs
+        try: return app.stream_json(read_inputs(sys.stdin))
+        finally: app.end_session("other")
     task = a.task or (None if sys.stdin.isatty() or not a.print else sys.stdin.read().strip())
     if task is None and not sys.stdin.isatty(): task = sys.stdin.read().strip() or None
-    if task: return app.one_shot(task)
-    return app.repl()
+    try:
+        if task: return app.one_shot(task)
+        return app.repl()
+    finally: app.end_session("other" if task else "prompt_input_exit")
 
 if __name__ == "__main__":
     sys.exit(main())

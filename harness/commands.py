@@ -61,18 +61,21 @@ class Commands:
         print("\n" + "\n".join(self._wrap(l, 2) for l in SHORTCUTS.split("\n")) + f"\n  {ui.dim('/help <command> for details')}")
 
     def c_clear(self, _):
+        self.end_session("clear")
         self.agent.reset(); self.state.todos.clear(); self.state.read_files.clear()
         self.sid = sessions.new_id(); self.hooks.session_id = self.sid; self.refresh_system(); print(ui.dim("  conversation cleared"))
+        for e in (self.hooks.run("SessionStart", "clear", {"source": "clear"})[1:] if self.hooks.has("SessionStart") else []): print(e)
 
     def context_used(self) -> int:
         """Estimated tokens the next request will carry: messages (including tool calls) plus the tool schemas."""
         from ctxguard import est_tokens
         return sum(est_tokens(m.get("content") or "") + est_tokens(json.dumps(m.get("tool_calls") or "")) for m in self.agent.messages) + est_tokens(json.dumps(self.toolbox.schemas()))
 
-    def compact_now(self):
+    def compact_now(self, trigger="manual"):
         """Summarize the history, on settings.helperModel if one is set (the private server swaps to it and back; costs two reloads).
         Measured 2026-10-07 (evals/live_checks.py helper-compact, gemma4-e2b vs the 9B): the helper was slower (7-9 s vs 5 s) and lost
         the key fact in 1 of 2 runs. Leave it unset on a single 8 GB GPU."""
+        if self.hooks.has("PreCompact"): self.hooks.run("PreCompact", trigger, {"trigger": trigger, "custom_instructions": ""})
         helper, srv, main = self.settings.get("helperModel"), getattr(self.llm, "server", None), self.llm.model
         if not (helper and srv and helper != main): return self.agent.compact()
         srv.switch_model(helper); self.llm.model = helper
@@ -91,27 +94,58 @@ class Commands:
         except LLMError as e: print(ui.red(f"LLM error: {e}"))
 
     def c_model(self, arg):
-        """/model [name]: show the model, or switch to another one on the fly (the conversation is kept; a private llama-server reloads)."""
-        from .llm import gguf_args
+        """/model: pick a model from a list (arrow keys). /model <name>: switch to it. /model set [<key> <value>]: show or save this
+        model's own settings (num_ctx, think, sampling, llamaServerArgs, description); /model unset <key> removes one.
+        The conversation is kept; a private llama-server reloads with the model's settings."""
+        from . import models
+        from .llm import gguf_args, installed_models
+        cmd, _, rest = arg.strip().partition(" ")
+        if cmd in ("set", "unset"): return self._model_set(cmd, rest.strip())
         name = arg.strip()
-        if not name or name == self.llm.model: print(f"  model: {self.llm.model}" + ("" if name else ui.dim("   (/models lists installed ones, /model <name> switches)"))); return
-        srv = getattr(self.llm, "server", None)
-        if srv:
+        if not name:
+            srv = getattr(self.llm, "server", None)
+            try: inst = installed_models() if srv else self.llm.models()
+            except Exception: inst = []
+            name = models.pick(models.choices(self.settings, self.llm.model, inst), self.llm.model, self.settings)
+            if name is None:
+                print(f"  model: {self.llm.model}  " + ui.dim(models.describe(self.settings, self.llm.model)))
+                print(ui.dim("  /model <name> switches · /model set <key> <value> saves this model's settings")); return
+            if name == self.llm.model: return
+        if name == self.llm.model: print(f"  model: {name}  " + ui.dim(models.describe(self.settings, name))); return
+        if getattr(self.llm, "server", None):
             if gguf_args(name)[0] == "-hf": print(ui.dim("  not installed locally; llama-server will download it"))
             print(ui.dim(f"  loading {name}…"))
-            try: srv.switch_model(name, say=lambda m: None)
-            except LLMError as e:
-                print(ui.red(f"  could not load {name}; kept {srv.model}\n    " + str(e).splitlines()[-1][:160])); return
-        self.llm.model = name; self.refresh_system()
-        print(f"  {ui.acc('●')} switched to {ui.bold(name)}" + ui.dim("  (conversation kept)"))
+        old = self.llm.model
+        if (err := models.apply(self, name)): print(ui.red(f"  could not load {name}; kept {old}\n    {err}")); return
+        print(f"  {ui.acc('●')} switched to {ui.bold(name)}  " + ui.dim(models.describe(self.settings, name) + "  (conversation kept)"))
+
+    def _model_set(self, cmd, rest):
+        from . import models
+        key, _, raw = rest.partition(" "); raw = raw.strip()
+        if not key:
+            conf = models.model_conf(self.settings, self.llm.model); eff = models.effective(self.settings, self.llm.model, self.a)
+            print(f"  {ui.bold(self.llm.model)}")
+            for k in models.KEYS:
+                v = eff.get(k) if k in eff else conf.get(k)
+                print(f"    {k}: {json.dumps(v) if isinstance(v, dict) else v}" + ("" if k in conf else ui.dim("  (default)")))
+            print(ui.dim("  /model set <key> <value> · /model unset <key>   (saved to ~/.alice/settings.json under \"models\")")); return
+        if key not in models.KEYS: print(ui.red(f"  unknown key {key}; use one of: {', '.join(models.KEYS)}")); return
+        if cmd == "set" and not raw: print(ui.red(f"  usage: /model set {key} <value>")); return
+        try: value = None if cmd == "unset" else models.parse_value(key, raw)
+        except ValueError as e: print(ui.red(f"  {e}")); return
+        f = models.save(self.settings, self.llm.model, key, value)
+        print(ui.dim(f"  saved to {f}"))
+        if key in ("num_ctx", "llamaServerArgs") and getattr(self.llm, "server", None): print(ui.dim("  reloading the model…"))
+        if (err := models.apply(self, self.llm.model)): print(ui.red(f"  could not reload: {err}"))
+        else: print(f"  {ui.acc('●')} {self.llm.model}  " + ui.dim(models.describe(self.settings, self.llm.model)))
 
     def c_models(self, _):
+        from . import models
         from .llm import installed_models
         try:
             names = installed_models() if getattr(self.llm, "server", None) else self.llm.models()
-            if getattr(self.llm, "server", None) and self.llm.model not in names: names.insert(0, self.llm.model)
-            for m in names: print(f"  {ui.acc('●') if m == self.llm.model else ' '} {m}")
-            if not names: print(ui.dim("  none found"))
+            for m in models.choices(self.settings, self.llm.model, names):
+                print(f"  {ui.acc('●') if m == self.llm.model else ' '} {m}  {ui.dim(models.describe(self.settings, m))}")
         except Exception as e: print(ui.red(f"  cannot list models: {e}"))
 
     def c_perms(self, arg):
@@ -221,6 +255,7 @@ class Commands:
     def _on_event(self, e):
         self.renderer.event(e)
         if self.rc and self.rc.server: self.rc.record_event(e)
+        if getattr(self, "sj", None): self.sj.event(e)
 
     def rc_submit(self, text):
         """A prompt from the remote page: injected into the open prompt if idle, else queued as type-ahead."""

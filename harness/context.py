@@ -51,16 +51,35 @@ def load_settings(cwd: str) -> dict:
             else: out[k] = v
     return out
 
-# ---- memory (AGENTS.md / CLAUDE.md / ALICE.md): the global ~/.alice dir and the project dir only, no walking up
-MEMORY_NAMES = ("AGENTS.md", "CLAUDE.md", "ALICE.md")
+# ---- memory, like Claude Code: ~/.alice, then every directory from / down to the project (farthest first), each with
+# AGENTS.md / CLAUDE.md / ALICE.md, .claude/CLAUDE.md and the uncommitted *.local.md; `@path` lines import other files
+MEMORY_NAMES = ("AGENTS.md", "CLAUDE.md", "ALICE.md", os.path.join(".claude", "CLAUDE.md"), "CLAUDE.local.md", "ALICE.local.md")
+IMPORT_DEPTH = 5
+_IMPORT = re.compile(r"(?<![\w`@])@((?:~|\.{1,2})?/?[\w.+-]+(?:/[\w.+-]+)*)")
 
 def memory_files(cwd: str) -> list[str]:
-    dirs = [os.path.join(HOME, ".alice"), os.path.abspath(cwd)]
+    d, chain = os.path.abspath(cwd), []
+    while True:
+        chain.append(d)
+        up = os.path.dirname(d)
+        if up == d: break
+        d = up
     out = []
-    for d in dirs:
+    for d in [os.path.join(HOME, ".alice")] + chain[::-1]:
         for n in MEMORY_NAMES:
             f = os.path.join(d, n)
             if os.path.isfile(f) and f not in out: out.append(f)
+    return out
+
+def imports(path: str, text: str, seen: set, depth: int = 1) -> list[str]:
+    """Files named by `@path` in text (relative to the file; ~ allowed; not inside code), recursively up to IMPORT_DEPTH."""
+    if depth > IMPORT_DEPTH: return []
+    prose = re.sub(r"```.*?```|`[^`\n]*`", "", text, flags=re.S)
+    out = []
+    for m in _IMPORT.finditer(prose):
+        f = os.path.normpath(os.path.join(os.path.dirname(path), os.path.expanduser(m.group(1).rstrip("."))))
+        if f in seen or not os.path.isfile(f): continue
+        seen.add(f); out.append(f); out += imports(f, read(f, MEMORY_CAP), seen, depth + 1)
     return out
 
 def memory_target(cwd: str) -> str:
@@ -70,11 +89,15 @@ def memory_target(cwd: str) -> str:
     return os.path.join(cwd, "ALICE.md")
 
 def memory_text(cwd: str) -> str:
-    parts, total = [], 0
-    for f in reversed(memory_files(cwd)):          # nearest first, so the project's own file survives the total cap
+    files = memory_files(cwd); seen = set(files); groups = []
+    for f in files:
         t = read(f, MEMORY_CAP)
-        if total + len(t) > MEMORY_TOTAL: break
-        total += len(t); parts.append(f"## {f}\n{t.strip()}")
+        groups.append([(f, t)] + [(i, read(i, MEMORY_CAP)) for i in imports(f, t, seen)])
+    parts, total = [], 0
+    for g in reversed(groups):                     # nearest first, so the project's own file survives the total cap
+        size = sum(len(t) for _, t in g)
+        if total + size > MEMORY_TOTAL: break
+        total += size; parts.append("\n\n".join(f"## {f}" + (" (imported)" if i else "") + f"\n{t.strip()}" for i, (f, t) in enumerate(g)))
     return "\n\n".join(reversed(parts))
 
 def env_block(cwd: str, model: str) -> str:

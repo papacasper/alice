@@ -345,13 +345,16 @@ class LlamaServer:
         try: self.start(say=lambda m: None); return True
         except LLMError: return False
 
-    def switch_model(self, model: str, say=lambda s: None) -> str:
-        """Stop, load a different model on the same port (same URL, so the client keeps working); if it fails, bring the old one back."""
-        old = (self.model, self.vision)
+    def switch_model(self, model: str, say=lambda s: None, num_ctx: int = 0, extra: list[str] | None = None) -> str:
+        """Stop, load a different model (or the same one with a new context size / extra flags) on the same port (same URL, so the
+        client keeps working); if it fails, bring the old one back with its old settings."""
+        old = (self.model, self.vision, self.num_ctx, self.extra)
         self.stop(); self.proc = None; self.model, self.vision = model, False
+        self.num_ctx = num_ctx or self.num_ctx
+        if extra is not None: self.extra = extra
         try: return self.start(say=say)
         except LLMError:
-            self.model, self.vision = old; self.proc = None
+            self.model, self.vision, self.num_ctx, self.extra = old; self.proc = None
             try: self.start(say=say)
             except LLMError: pass
             raise

@@ -19,6 +19,7 @@ class H(BaseHTTPRequestHandler):
         if self.path == "/health": self._json({"status": "ok"})
         elif self.path == "/v1/models": self._json({"data": [{"id": ALIAS}]})
         elif self.path == "/_log": self._json(LOG)
+        elif self.path == "/_args": self._json(args)
         else: self._json({}, 404)
     def do_POST(self):
         if self.path.startswith("/slots/"):

@@ -93,6 +93,7 @@ class Agent:
             if calls:
                 msg["tool_calls"] = calls
             self.messages.append(msg)
+            self.on_event({"type": "assistant_message", "message": msg, "step": step})
             if not calls:
                 self.on_event({"type": "answer", "text": m.get("content") or ""})
                 return Result(m.get("content") or "", "answered", step, n_calls, self.messages)

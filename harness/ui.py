@@ -150,7 +150,8 @@ def getkey() -> str:
         tty.setcbreak(fd); ch = os.read(fd, 1).decode(errors="ignore")
         if ch == "\x1b":
             import select
-            if select.select([fd], [], [], 0.05)[0]: os.read(fd, 8); return "?"   # arrow keys etc.: ignore
+            if select.select([fd], [], [], 0.05)[0]:   # arrow keys -> "UP"/"DOWN"; other escape sequences -> "?"
+                return {"[A": "UP", "[B": "DOWN", "OA": "UP", "OB": "DOWN"}.get(os.read(fd, 8).decode(errors="ignore")[:2], "?")
             return ""
         if ch == "\x03": raise KeyboardInterrupt
         return ch

@@ -6,7 +6,8 @@ Launcher: any `alice` script on your PATH that runs `PYTHONPATH=<repo> python3 -
 ```
 alice                         # interactive REPL (streaming, slash commands, history)
 alice "fix the failing test"  # one-shot; exit 0 answered, 2 step limit, 1 error
-echo "summarize" | alice -p   # headless; --output-format json for scripts
+echo "summarize" | alice -p   # headless; --output-format json | stream-json for scripts
+alice -p --input-format stream-json --output-format stream-json < turns.ndjson   # Claude Code's NDJSON protocol
 alice -c  /  alice -r [ID]    # continue the latest / a specific session
 python3 -m unittest discover -s harness/tests     # no model needed (fake LLM, fake llama-server)
 ```
@@ -18,12 +19,13 @@ python3 -m unittest discover -s harness/tests     # no model needed (fake LLM, f
 | Edit safety | must `Read` before `Edit`/`Write`; unique-match or `replace_all`; stale-file check; colored diff |
 | Bash | persistent cwd between calls, timeout kill, middle-truncated output |
 | Permissions | `--permission-mode default\|acceptEdits\|plan\|bypassPermissions`, allow/deny rules, `y/a/n` prompt — `permissions.py`. **Default here is bypassPermissions** (everything allowed); use `--permission-mode default` to be asked |
-| Memory | `AGENTS.md`, `CLAUDE.md`, `ALICE.md` from `~/.alice/` and the project dir only (no walking up), capped; `--no-memory` |
+| Memory | `AGENTS.md`, `CLAUDE.md`, `ALICE.md`, `.claude/CLAUDE.md`, `CLAUDE.local.md`, `ALICE.local.md` from `~/.alice/` and every directory from `/` down to the project (nearest last, kept first under the cap); `@path` imports (relative to the file, `~` ok, not in code, 5 deep); `--no-memory` |
 | Slash commands | `/help` lists them all (`/clear /compact /model /resume /rewind /context /statusline /rc` …); custom ones from `.alice/commands/*.md` or `.claude/commands/*.md` (`$ARGUMENTS`) |
 | Skills | `SKILL.md` dirs under `~/.claude/skills`, `~/.alice/skills`, `./.claude/skills`, `./.alice/skills`; model loads one with `Skill` |
 | Subagents | `Task` (`general-purpose` or read-only `explore`) runs a fresh-context agent and returns its report |
-| Hooks | `PreToolUse PostToolUse UserPromptSubmit Stop SessionStart` in `settings.json` (exit 2 blocks) — `hooks.py` |
-| MCP | stdio servers from `settings.json` `mcpServers` -> `mcp__server__tool` — `mcp.py` |
+| Hooks | `PreToolUse PostToolUse PermissionRequest Notification UserPromptSubmit Stop SubagentStop PreCompact SessionStart SessionEnd` in `settings.json` (exit 2 blocks; Claude Code's JSON output understood) — `hooks.py` |
+| MCP | stdio, Streamable HTTP (`"type": "http"`, JSON or SSE replies, session id) and legacy SSE servers from `settings.json` `mcpServers` and project `.mcp.json` (approve with `enabledMcpjsonServers` / `enableAllProjectMcpServers`); `${VAR}` / `${VAR:-default}` expanded; `headers` for tokens -> `mcp__server__tool` — `mcp.py` |
+| Headless | `-p`, `--output-format text/json/stream-json`, `--input-format stream-json`, `--include-partial-messages` (Claude Code's event shapes: system/init, assistant, user tool_result, result) — `streamjson.py` |
 | Sessions | autosaved to `~/.alice/sessions/`; `-c`, `-r`, `/resume` — `sessions.py` |
 | Input niceties | `!cmd` shell, `@file` attach, `\` line continuation, Ctrl-C interrupts a turn |
 
@@ -31,10 +33,10 @@ Settings: `~/.alice/settings.json`, `./.alice/settings.json`, `./.alice/settings
 `{"model":..., "num_ctx":..., "permissionMode":..., "permissions":{"allow":["Bash(git status:*)"],"deny":["Bash(rm:*)"]}, "hooks":{...}, "mcpServers":{...}}`
 
 ## Not (yet) cloned
-A full-screen TUI and plugin marketplaces.
+A full-screen TUI, plugin marketplaces, MCP OAuth logins (use a token in `headers`), and the Read tool returning images (pasted images and `@image.png` mentions do work).
 
 ## Modules (swap any one)
-`llm.py` llama-server and Ollama clients (streaming, usage, KV slots) · `tools.py` `@tool` registry · `cctools.py` Claude Code tools · `builtin.py` legacy sandboxed tools (kept for tests/plugins) · `agent.py` loop (ctxguard, repeat breaker, gate/post hooks) · `cli.py` app + REPL · `commands.py` slash commands · `prompt.py` prompt UI · `statusline.py` status line · `ui.py` rendering · `fsutil.py` file helpers · `context.py` system prompt/memory/skills/settings.
+`llm.py` llama-server and Ollama clients (streaming, usage, KV slots) · `tools.py` `@tool` registry · `cctools.py` Claude Code tools · `builtin.py` legacy sandboxed tools (kept for tests/plugins) · `agent.py` loop (ctxguard, repeat breaker, gate/post hooks) · `cli.py` app + REPL · `commands.py` slash commands · `prompt.py` prompt UI · `statusline.py` status line · `ui.py` rendering · `fsutil.py` file helpers · `context.py` system prompt/memory/skills/settings · `models.py` model picker and per-model settings · `streamjson.py` NDJSON headless protocol · `mcp.py` MCP clients (stdio, HTTP, SSE) · `hooks.py` hooks.
 
 ## Known limits
 - 9B model, 32k context by default (`--num-ctx`): the system prompt + tool schemas cost a few thousand tokens (`/context` shows the split); `ctxguard` elides old tool output so the task is never dropped.
@@ -80,7 +82,8 @@ A full-screen TUI and plugin marketplaces.
 
 ## Remote control and model switching
 - `/rc` starts a small web page + JSON API (`harness/rc.py`) to watch and drive the running session from a phone or another machine. It binds to the Tailscale IPv4 if there is one, else 127.0.0.1 (`/rc local` forces loopback); every URL carries a random token and a wrong token is a 404. Prompts sent from the page behave like typed ones (queued during a turn); Stop interrupts the turn. `/rc stop` ends it; the footer shows "remote control on".
-- `/model <name>` switches models mid-session: the private llama-server is reloaded on the same port, the conversation is kept, and if the new model fails to load the old one is restored. `/models` lists installed Ollama-store models and `~/.alice/models/*.gguf`; `/model ` tab-completes them.
+- `/model` with no name opens a picker (arrow keys or j/k, 1-9, Enter; Esc cancels). `/model <name>` switches directly: the private llama-server is reloaded on the same port, the conversation is kept, and if the new model fails to load the old one is restored. `/models` lists installed Ollama-store models, `~/.alice/models/*.gguf` and models named in settings; `/model ` tab-completes them.
+- Per-model settings: `"models": {"qwen3.5-9b": {"num_ctx": 16384, "think": "off", "sampling": {"temperature": 0.6}, "llamaServerArgs": "-fa on", "description": "fast"}}` in `settings.json`. A key applies to every model whose name contains it (longest key wins); CLI flags > per-model > top-level > defaults. `/model set num_ctx 16k` (or `think`, `sampling`, `llamaServerArgs`, `description`) saves to `~/.alice/settings.json` for the current model and reloads if needed; `/model unset <key>` removes it; `/model set` shows the effective values.
 - `/add-dir <path>` adds another working directory (shown to the model in its system prompt). If the model server dies mid-session alice says so and restarts it.
 - `/rename <name>` names a session (`/resume <name>`, shown in the list); `/output-style` switches between default/concise/explanatory or your own `~/.alice/output-styles/<name>.md`; when the model calls several tools in one step the UI prints "⎿ N tool calls in this step".
 

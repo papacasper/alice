@@ -210,15 +210,14 @@ class TestSystemPrompt(unittest.TestCase):
 
 
 class TestMemoryFiles(unittest.TestCase):
-    def test_project_dir_only_three_names_no_walk_up(self):
+    def test_walks_up_and_project_files_come_last(self):
         from harness import context
         top = tempfile.mkdtemp(); sub = os.path.join(top, "proj"); os.mkdir(sub)
-        write_file(os.path.join(top, "CLAUDE.md"), "w", "PARENT")                      # must NOT be loaded
-        for n in ("AGENTS.md", "CLAUDE.md", "ALICE.md"): write_file(os.path.join(sub, n), "w", n)
-        got = [os.path.basename(f) for f in context.memory_files(sub) if f.startswith(sub)]
-        self.assertEqual(got, ["AGENTS.md", "CLAUDE.md", "ALICE.md"])
-        self.assertFalse(any(f.startswith(top) and not f.startswith(sub) for f in context.memory_files(sub)))
-        self.assertNotIn("PARENT", context.memory_text(sub))
+        write_file(os.path.join(top, "CLAUDE.md"), "w", "PARENT")
+        for n in ("AGENTS.md", "CLAUDE.md", "ALICE.md", "CLAUDE.local.md"): write_file(os.path.join(sub, n), "w", n)
+        got = [f for f in context.memory_files(sub) if f.startswith(top)]
+        self.assertEqual([os.path.relpath(f, top) for f in got], ["CLAUDE.md"] + [os.path.join("proj", n) for n in ("AGENTS.md", "CLAUDE.md", "ALICE.md", "CLAUDE.local.md")])
+        t = context.memory_text(sub); self.assertLess(t.index("PARENT"), t.index("CLAUDE.local.md"))
 
     def test_note_target(self):
         from harness import context
