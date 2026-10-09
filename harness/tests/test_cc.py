@@ -521,7 +521,7 @@ class TestRemoteControl(unittest.TestCase):
             base = url.rsplit("/", 2)[0]
             for bad in (base + "/", base + "/wrongtoken/", base + "/wrongtoken/state"):
                 with self.assertRaises(urllib.error.HTTPError) as c: urllib.request.urlopen(bad)
-                self.assertEqual(c.exception.code, 404)
+                self.assertEqual(c.exception.code, 404); c.exception.close()
             self.assertIn("Alice", urllib.request.urlopen(url).read().decode())
             rc.record("user", "hi"); rc.record_event({"type": "tool_call", "name": "Bash", "args": {"command": "ls"}}); rc.record_event({"type": "answer", "text": "done"})
             st = json.load(urllib.request.urlopen(url + "state?since=1"))
@@ -529,7 +529,7 @@ class TestRemoteControl(unittest.TestCase):
             post = lambda p, b: urllib.request.urlopen(urllib.request.Request(url + p, json.dumps(b).encode(), method="POST"))
             post("send", {"text": "  do it  "}); post("stop", {})
             with self.assertRaises(urllib.error.HTTPError) as c: post("send", {"text": " "})
-            self.assertEqual(c.exception.code, 400); self.assertEqual(a.sent, ["do it", "<stop>"])
+            self.assertEqual(c.exception.code, 400); c.exception.close(); self.assertEqual(a.sent, ["do it", "<stop>"])
         finally: rc.stop()
         self.assertIsNone(rc.server)
 

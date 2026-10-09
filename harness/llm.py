@@ -66,7 +66,7 @@ class OllamaClient:
                         out["tool_calls"] = calls
                     return out
             except urllib.error.HTTPError as e:
-                detail = e.read()[:300].decode(errors="replace")
+                detail = e.read()[:300].decode(errors="replace"); e.close()
                 if e.code < 500 or attempt == self.retries:
                     raise LLMError(f"HTTP {e.code}: {detail}") from None
             except (urllib.error.URLError, TimeoutError, ConnectionError) as e:
@@ -199,7 +199,7 @@ class OpenAIClient:
                     elif not out["content"].strip() and reasoning.strip(): out["content"] = reasoning.strip()   # the model ended its turn inside its reasoning: that text is the answer
                     return out
             except urllib.error.HTTPError as e:
-                detail = e.read()[:300].decode(errors="replace")
+                detail = e.read()[:300].decode(errors="replace"); e.close()
                 if e.code < 500 or attempt == self.retries: raise LLMError(f"HTTP {e.code}: {detail}") from None
             except (urllib.error.URLError, TimeoutError, ConnectionError) as e:
                 if attempt == self.retries: raise LLMError(f"cannot reach the model server at {self.host}: {e}") from None
